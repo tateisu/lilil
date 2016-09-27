@@ -1,0 +1,45 @@
+#!perl --
+use utf8;
+use strict;
+use warnings;
+
+{
+	
+	slack_bot_api_token => 'write slack bot api access token',
+	slack_channel_name => 'write slack channel name. ex )#tate-bot-test',
+	slack_bot_name => 'write slack bot name. ex)tate-bot',
+
+	irc_server => {
+		# ログに出るサーバ名
+		Name => "write any name of this irc connection setting",
+		
+		# サーバ指定。
+		# FIXME: 複数サーバに交互に接続する機能があるといいのかも。今回はいらないが。
+		ServerSpec => {
+			Nick	 => 'write nick name of this irc bot',
+			Server	 => 'write server host. ex) irc.livedoor.ne.jp',
+			Port	 => '6667',# ポート番号,
+			Username => 'write user name',
+			Ircname  => 'write real name',
+			Bitmode => 8, # 8は+i相当
+			msg_length => 2048,
+		},
+		
+		# MOTDを受け取った後にjoinするチャネル
+		JoinChannel =>[
+			'write channel name to join. ex)#たてSlackぼっと',
+		],
+
+		# set 1 if character encoding is JIS-2022-jp, set 0 if UTF-8
+		is_jis => 1,
+
+		# (内部)再接続時にjoinするチャネル。これはinviteされたチャネルを含むはずだ
+		CurrentChannel => {},
+		
+		# write regex for auto op(+o)
+		AutoOpRegEx  => [
+#			qr/^tate.+\Q!~tATE-0dBPg@\E/i,
+		],
+		
+	},
+};

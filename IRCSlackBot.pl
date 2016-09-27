@@ -2,7 +2,6 @@
 use utf8;
 use strict;
 use warnings;
-use JIS4IRC;
 use JSON;
 use Carp;
 use Data::Dump;
@@ -10,6 +9,7 @@ use Furl;
 use Encode;
 use Encode::Guess;
 use Time::HiRes qw(time);
+use JIS4IRC;
 
 require POE::Wheel::Run;
 require POE::Component::Client::DNS;
@@ -17,92 +17,126 @@ require POE::Component::IRC;
 use POE qw(Component::IRC);
 use AnyEvent;
 use AnyEvent::SlackRTM;
-
-my $eucjp = Encode::find_encoding("EUC-JP");
-my $utf8 = Encode::find_encoding("utf8");
+use AnyEvent::HTTP;
 
 binmode STDOUT, ":utf8";
 binmode STDERR, ":utf8";
 
+my $eucjp = Encode::find_encoding("EUC-JP");
+my $utf8 = Encode::find_encoding("utf8");
+
 my $debug = 0;
 
-my $slack_bot_token;
-{
-	my $fname = "slack-bot-token.txt";
-	open(my $fh,"<",$fname) or die "$fname $!";
-	$slack_bot_token = <$fh>;
-	close($fh) or die "$fname $!";
-	$slack_bot_token or die "$fname: not contains slack bot api token";
-	$slack_bot_token =~ s/[\x00-\x1f]+//g;
-	$slack_bot_token or die "$fname: not contains slack bot api token";
-}
-
-
-# 接続の設定
-my @BotSpec = (
-	{
-		# ログに出る名前
-		Name => "wide",
-		
-		# サーバ指定。
-		# FIXME: 複数サーバに交互に接続する機能があるといいのかも。今回はいらないが。
-		ServerSpec => {
-			Nick	 => 'write bot nickname here',
-			Server	 => 'irc.livedoor.ne.jp', # サーバ名
-			Port	 => '6667',# ポート番号,
-			Username => 'write username here',
-			Ircname  => 'write summary,etc here',
-			Bitmode => 8, # 8は+i相当
-			msg_length => 2048,
-		},
-		
-		# MOTDを受け取った後にjoinするチャネル
-		JoinChannel =>[
-			'write channel name here',
-		],
-		
-		# (内部)再接続時にjoinするチャネル。これはinviteされたチャネルを含むはずだ
-		CurrentChannel => {},
-		
-		encode => sub{ JIS4IRC::fromEUCJP( $eucjp->encode($_[0])); },
-		decode => sub{ $eucjp->decode( JIS4IRC::toEUCJP(  $_[0])); },
-		
-		AutoOpRegEx  => [
-#			qr/^tate.+\Q!~tATE-0dBPg@\E/i,
-		],
-		
-		SkipURLWithComment => 0,
-	}
-);
-
-###################################################
-# ユーティリティ
-
+our $TAG = '$$TAG$$';
 sub console($;$$$$$$$$$$$$$$$$){
 	printf STDERR @_;
 	print STDERR "\n";
 }
 
-our $TAG = '$$TAG$$';
 
-##########################################################################
-# Slack bot on AnyEvent
+# 設定ファイルを読む
+my $config_file = shift // 'config.pl';
+my $config = do $config_file;
+$@ and die "$config_file : $@\n";
 
-my $slack_channel_id = "write channel id here";
+my $URL_CHANNEL_LIST = "https://slack.com/api/channels.list";
+my $URL_USER_LIST = "https://slack.com/api/users.list";
+my $slack_bot_token = $config->{slack_bot_api_token};
+my $slack_channel_id = find_channel_id( $config->{slack_channel_name} );
+my $slack_bot_name = $config->{slack_bot_name};
+console "Slack Channel: $slack_channel_id,$config->{slack_channel_name}";
+
+
+# Slack チャンネル名からチャンネルIDを探す
+sub find_channel_id{
+	my($channel_name)=@_;
+	my $channel_id;
+
+	eval{
+		my $furl = Furl->new( agent => "IRCSlackBot" );
+    	my $res = $furl->get( "$URL_CHANNEL_LIST?token=$slack_bot_token");
+    	die $res->status_line unless $res->is_success;
+		my $json = decode_json($res->content);
+		if( not $json->{ok} ){
+			die "channel.list error=$json->{error}\n";
+		}else{
+		    for my $channel ( @{ $json->{channels} } ){
+				if( "\#$channel->{name}" eq $channel_name ){
+					$channel_id = $channel->{id};
+					last;
+				}
+			}
+			$channel_id or die "missing Slack channel '$channel_name'";
+		}
+	};
+	$@ and die "$@\n";
+	
+	return $channel_id;
+}
+
+# Slack ユーザ名の一覧を更新
+my $slack_user_map ={};
+my $slack_user_map_update =0;
+sub update_slack_cache {
+
+	# 不必要ならキャッシュ更新を控える
+	my $now = time;
+	return if $now - $slack_user_map_update < 5*60;
+
+	$slack_user_map_update = $now;
+
+	console "get slack user list..";
+	http_get "$URL_USER_LIST?token=$slack_bot_token", sub {
+		my($data,$headers)=@_;
+		console "parse slack user list..";
+		eval{
+			my $json = decode_json($data);
+		    if( not $json->{ok} ){
+				console "unable to get user list, Slack returned an error: $json->{error}"
+			}else{
+			    for my $member ( @{ $json->{members} } ){
+					$slack_user_map->{ $member->{id} } = $member;
+				}
+				console "slack user list size=".scalar(%$slack_user_map);
+			}
+		};
+		$@ and console $@;
+	};
+}
+
+#########################################################################
+
+
 my $slack_rtm;
 my $keep_alive;
 
 sub slack_start{
+
+	update_slack_cache();
+
 	$slack_rtm = AnyEvent::SlackRTM->new($slack_bot_token);
+
+	$slack_rtm->on(
+		'finish' => sub {
+			print "Slack Connection finished.\n";
+			undef $slack_rtm;
+			undef $keep_alive;
+		}
+	);
 
 	$slack_rtm->on(
 		'hello' => sub {
 			print "Slack Connection ready.\n";
+
 			$keep_alive = AnyEvent->timer(
 				interval => 60
 				, cb => sub {
-					print "Ping\n";
+					# Pingを送るらしいがログに出てこない。いつ呼ばれるんだろう
+					console "Slack Connection Ping.\n";
 					$slack_rtm->ping;
+					
+					# ユーザ名キャッシュを定期的に更新する
+					update_slack_cache();
 				}
 			);
 		}
@@ -110,234 +144,73 @@ sub slack_start{
 
 	$slack_rtm->on(
 		'message' => sub {
-			my ($rtm, $message) = @_;
-			warn Data::Dump::dump($message);
-			relay_to_irc( $message->{user},$message->{text});
+			my($rtm, $message) = @_;
+			eval{
+				# 発言者のIDと名前を調べる
+				my $member;
+				if( $message->{user_profile} ){
+					$member = $slack_user_map->{ $message->{user} } = $message->{user_profile};
+				}else{
+					$member = $slack_user_map->{ $message->{user} };
+				}
+				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
+				
+				# たまに起動直後に過去の自分の発言を拾ってしまう
+				# 自分の発言はリレーしないようにする
+				return if $from eq $slack_bot_name;
+
+				# subtype によっては特殊な出力が必要
+				if( $message->{subtype} and $message->{subtype} eq "channel_join" ){
+					relay_to_irc( "${from} さんが参加しました");
+				}elsif( $message->{subtype} and $message->{subtype} eq "channel_leave" ){
+					relay_to_irc( "${from} さんが退出しました");
+				}else{
+					console Data::Dump::dump($message) if $message->{subtype};
+					my $from =  (not defined $member ) ? $message->{user} : $member->{name};
+					relay_to_irc( "<$from> $message->{text}");
+				}
+			};
+			$@ and console $@;
 		}
 	);
 
-	$slack_rtm->on(
-		'finish' => sub {
-			print "Slack Connection finished.\n";
-			undef $slack_rtm;
-		}
-	);
 	$slack_rtm->start;
 }
 
-# text は UTF8フラグつきの文字列であること
+# slackのチャンネルにメッセージを送る
 sub relay_to_slack{
-	my($from,$text)=@_;
-	$from =~ s/!.*//;
+	my($msg)=@_;
+	# $msg はUTF8フラグつきの文字列
 	eval{
 		$slack_rtm->send(
 			{
 				type => 'message'
 				,channel => $slack_channel_id
-				,text => "<$from> $text"
+				,text => $msg
 			}
 		);
 	};
 	$@ and warn $@;
 }
 
-my $user_map;
-my $user_map_update;
-my $URL_USER_LIST = "https://slack.com/api/users.list";
-my $furl = Furl->new( agent => "IRCSlackBot", );
-
-sub update_slack_cache {
-	my($user_id) = @_;
-	
-	my $now = time;
-	if( $user_map && $now - $user_map_update < 5*60 ){
-		# キャッシュを更新しない
-	}elsif( not $user_map or not $user_map->{$user_id} ){
-		$user_map_update = $now;
-
-		# キャッシュを更新する
-		my $res = $furl->get($URL_USER_LIST . '?token=' . $slack_bot_token);
-		my $json = decode_json($res->content);
-	    if( not $json->{ok} ){
-		    croak "unable to get user list, Slack returned an error: $json->{error}"
-		}else{
-		    $user_map = {};
-		    for my $member ( @{ $json->{members} } ){
-				$user_map->{ $member->{id} } = $member;
-			}
-		}
-	}
-}
-update_slack_cache("");
-
-
 ###########################################################
 
 my $relay_irc_bot ;
 my $relay_irc_channel;
 
+# $msg は UTF8フラグつきの文字列であること
 sub relay_to_irc{
-	my($user_id,$text)=@_;
-	
-	warn 1;
-	
-	my $from;
-	{
-		eval{
-			update_slack_cache($user_id);
-		};
-		$@ and warn $@;
-		my $member = (not defined $user_map )? undef : $user_map->{$user_id};
-		$from =  (not defined $member ) ? $user_id : $member->{name};
-	}
-	
-	warn 2;
-
-	# text は UTF8フラグつきの文字列であること
+	my($msg)=@_;
 	eval{
-		my $msg = "<$from>$text";
-		console "SlackToIRC: $msg => $relay_irc_channel";
-		$relay_irc_bot->{irc}->yield( notice => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
+		if( $relay_irc_bot and $relay_irc_channel ){
+			console "SlackToIRC: $relay_irc_channel $msg ";
+			$relay_irc_bot->{irc}->yield( notice => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
+		}
 	};
-	$@ and warn $@;
-
-	warn 3;
+	$@ and console $@;
 }
 
 ############################################################
-
-###################################################
-# 子プロセスの管理
-
-my %child_map;
-
-sub handle_url($$$$$){
-	my($kernel, $heap,$bot,$channel,$url)=@_;
-
-	sweep();
-	console(" child_map count=". (0+keys(%child_map)) );
-	
-	if( keys(%child_map) >= 100 ){
-		console "too many info. ignore url..";
-		return;
-	}
-
-	my $task = POE::Wheel::Run->new(
-		Program 	=> [ "/usr/bin/perl", "get_title.pl", $url],
-		StdoutFilter => POE::Filter::Line->new(),
-		StdoutEvent => "child_stdout",
-		StderrEvent => "child_stderr",
-		ErrorEvent	=> "child_error",
-		CloseEvent	=> "child_close",
-	);
-	if( not $task ){
-		console "ERROR: cannot create child process.";
-		return;
-	}else{
-		$kernel->sig_child($task->PID, "child_signal");
-		$task->shutdown_stdin();
-	}
-	$child_map{ $task->ID } = { 
-		 task=>$task
-		,bot=>$bot
-		,channel=>$channel
-		,url=>$url
-		,time_start=> time
-		,buf_stdout=>"" 
-		,buf_stderr=>"" 
-	};
-}
-
-sub child_stdout {
-	my ($heap, $input, $wheel_id) = @_[HEAP, ARG0, ARG1];
-	my $info = $child_map{$wheel_id};
-#	console "child_stdout length=%s",length($input);
-	$info and $info->{buf_stdout} .= $input;
-}
-sub child_stderr {
-	my ($heap, $input, $wheel_id) = @_[HEAP, ARG0, ARG1];
-	my $info = $child_map{$wheel_id};
-#	console "child_stderr length=%s",length($input);
-	$info and $info->{buf_stderr} .= $input;
-}
-sub child_close{
-	my ($heap, $wheel_id) = @_[HEAP, ARG0];
-	my $info = $child_map{$wheel_id};
-	console "child_close";
-	delete $child_map{$wheel_id};
-	task_close($info);
-}
-sub child_error{
-	my ($heap, $operation, $errnum, $errstr, $wheel_id) = @_[HEAP,ARG0..ARG3];
-	my $info = $child_map{$wheel_id};
-	if( $operation eq "read" and !$errnum ){
-		# console "child_error: remote end closed";
-	}else{
-		console "child_error %s %s %s",$operation,$errnum, $errstr;
-	}
-	delete $child_map{$wheel_id};
-	task_close($info);
-}
-sub child_signal {
-	my( $heap, $sig, $pid, $exit_val, $details ) = @_[ HEAP, ARG0..ARG3 ];
-#	console "child_signal sig=%s pid=%s",$sig,$pid;
-}
-
-sub task_close{
-	my($info)=@_;
-	$info or return;
-
-	my $sv = $utf8->decode($info->{buf_stderr});
-	if( length($sv) > 0 ){
-		console "%s %s",$sv,$info->{url};
-	}
-	#
-	$sv = $utf8->decode($info->{buf_stdout});
-	if( length($sv) > 0 ){
-		my $bot = $info->{bot};
-		my $channel = $info->{channel};
-		console "%s %s: TITLE: %s",$bot->{Name},fix_channel_name($bot->{decode}($channel),1),$sv;
-		$sv = "【$sv 】";
-# ツイッターなどでタイトル末尾にURLが入ると、LimeChatなどがURL終端の検出に失敗する。
-# 仕方ないのでタイトル末尾と閉じカッコの間に半角空白を入れる
-		$bot->{irc}->yield( notice => $channel , $bot->{encode}($sv) );
-	}
-}
-
-sub sweep {
-	my $now = time;
-	my @wait_pid;
-	for my $id ( keys %child_map ){
-		my $info = $child_map{ $id };
-		my $delta = $now - $info->{time_start};
-		if( $delta > 300 ){
-			console "kill expired child pid=%s",$info->{task}->PID;
-			$info->{task}->kill;
-			delete $child_map{ $_ };
-		}else{
-			push @wait_pid,$info->{task}->PID;
-		}
-	}
-	@wait_pid and console "wait pid=\[%s]",join(',',@wait_pid);
-}
-
-
-
-###################################################
-# public message の処理
-
-my %schema_map = (
-	"http" =>"http",
-	 "ttp" =>"http",
-	 "ttp" =>"http",
-	  "tp" =>"http",
-	   "p" =>"http",
-	"https" =>"https",
-	 "ttps" =>"https",
-	 "ttps" =>"https",
-	  "tps" =>"https",
-	   "ps" =>"https",
-);
 
 sub handle_message($$$$$$){
 	my( $kernel,$heap,$bot,$from,$channel,$msg) = @_;
@@ -346,14 +219,13 @@ sub handle_message($$$$$$){
 		console "%s %s: exit required by (%s),said (%s)",$bot->{Name},fix_channel_name($bot->{decode}($channel),1),$from,$msg;
 		$bot->{irc}->yield( part => $channel );
 	}else{
-		relay_to_slack($from,$msg);
+		$from =~ s/!.*//;
+		relay_to_slack("<$from> $msg");
 	}
 }
 
-
 ###################################################
 # IRC接続の管理
-
 
 POE::Session->create(
 	inline_states => {
@@ -402,17 +274,31 @@ sub bot_start {
 	my $session = $_[SESSION];
 	# IRCオブジェクトを登録して接続する
 	console "register IRC component..";
-	for my $bot ( @BotSpec ){
+	
+	{
+		my $bot = $config->{irc_server};
+		
+		if( not $bot->{encode} ){
+			if($bot->{is_jis} ){
+				$bot->{encode} = sub{ JIS4IRC::fromEUCJP( $eucjp->encode($_[0])); };
+				$bot->{decode} = sub{ $eucjp->decode( JIS4IRC::toEUCJP(  $_[0])); };
+			}else{
+				$bot->{encode} = sub{ $utf8->encode($_[0]); };
+				$bot->{decode} = sub{ $utf8->decode($_[0]); };
+			}
+		}
+
 		$bot->{irc} = POE::Component::IRC->spawn();
 		$bot->{irc}->{$TAG} = $bot;
 		$bot->{irc}->yield( register => 'all' );
 		# チャネル名を正規化しておく
-		$bot->{JoinChannel} = {
+		$bot->{JoinChannelFixed} = {
 			map{ (fix_channel_name($_,0),1) }
 			@{$bot->{JoinChannel}}
 		};
 	}
-	for my $bot ( @BotSpec ){
+	{
+		my $bot = $config->{irc_server};
 		bot_connect( $bot,$bot->{irc} );
 	}
 	# タイマー開始
@@ -426,7 +312,8 @@ sub bot_timer{
 	# 次回のタイマー
 	$kernel->delay( bot_timer => 60 );
 	# 接続開始
-	for my $bot( @BotSpec ){
+	{
+		my $bot = $config->{irc_server};
 		bot_connect( $bot );
 	}
 }
@@ -482,11 +369,13 @@ sub on_001 {
 sub on_motd {
 	my $bot = $_[SENDER]->get_heap()->{$TAG};
 	console "%s: end of MOTD.",$bot->{Name};
-	for my $channel (keys %{ $bot->{JoinChannel} } ){
+	for my $channel (keys %{ $bot->{JoinChannelFixed} } ){
+		console "join to $channel";
 		my $arg = $bot->{encode}( $channel );
 		$bot->{irc}->yield( join => $arg );
 	}
 	for my $channel (keys %{ $bot->{CurrentChannel} } ){
+		console "join to $channel";
 		my $arg = $bot->{encode}( $channel );
 		$bot->{irc}->yield( join => $arg );
 	}
@@ -511,7 +400,7 @@ sub on_join {
 		return;
 	}else{
 		console "%s %s: join %s",$bot->{Name},$channel,$who;
-		$bot->{JoinChannel}{$channel} or $bot->{CurrentChannel}{$channel}=1;
+		$bot->{JoinChannelFixed}{$channel} or $bot->{CurrentChannel}{$channel}=1;
 		
 		$relay_irc_bot = $bot;
 		$relay_irc_channel = $_[ARG1];
@@ -568,5 +457,6 @@ sub on_public {
 
 
 slack_start();
+
 $poe_kernel->run();
 exit 0;
