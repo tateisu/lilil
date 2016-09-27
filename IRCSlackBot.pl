@@ -2,12 +2,12 @@
 use utf8;
 use strict;
 use warnings;
+
 use JSON;
 use Carp;
 use Data::Dump;
 use Furl;
 use Encode;
-use Encode::Guess;
 use Time::HiRes qw(time);
 use JIS4IRC;
 
