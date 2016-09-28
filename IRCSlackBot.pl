@@ -9,12 +9,14 @@ use Data::Dump;
 use Furl;
 use Encode;
 use Time::HiRes qw(time);
-use JIS4IRC;
 
 use AnyEvent;
 use AnyEvent::IRC::Connection;
-use AnyEvent::SlackRTM;
 use AnyEvent::HTTP;
+
+use JIS4IRC;
+use SlackBot;
+
    
 binmode STDOUT, ":utf8";
 binmode STDERR, ":utf8";
@@ -113,17 +115,18 @@ sub update_slack_cache {
 #########################################################################
 
 
-my $slack_rtm;
-my $keep_alive;
+my $slack_bot;
 my $slack_last_connection_start = 0;
 
 sub slack_start{
 	
-	if( $slack_rtm ){
-		console "Slack: already connected.";
+	# 既に接続しているなら何もしない
+	if( $slack_bot ){
+		# console "Slack: already connected.";
 		return;
 	}
-	
+
+	# 前回接続開始してから60秒以内は何もしない
 	my $now = time;
 	my $remain = $slack_last_connection_start + 60 -$now;
 	if( $remain > 0 ){
@@ -132,34 +135,38 @@ sub slack_start{
 	}
 	$slack_last_connection_start = $now;
 
+
 	console "Slack: connection start..";
 
-	$slack_rtm = AnyEvent::SlackRTM->new($slack_bot_token);
+	$slack_bot = SlackBot->new(
+		token => $slack_bot_token,
+		ping_interval => 60,
+		cb_error => sub{
+			my($error)=@_;
+			console "Slack: error: $error";
+			$slack_bot->close;
+			undef $slack_bot;
+		},
+		cb_warn => sub{
+			my($msg)=join ' ',@_;
+			console "Slack: warn: $msg";
+		},
+	);
 
-	$slack_rtm->on(
+	$slack_bot->on(
 		'finish' => sub {
 			console "Slack: connection finished.";
-			undef $slack_rtm;
-			undef $keep_alive;
+			$slack_bot->close;
+			undef $slack_bot;
 		}
 	);
-
-	$slack_rtm->on(
+	$slack_bot->on(
 		'hello' => sub {
 			console "Slack: connection ready.";
-
-			$keep_alive = AnyEvent->timer(
-				interval => 60
-				, cb => sub {
-					# Pingを送るらしいがログに出てこない。いつ呼ばれるんだろう
-					console "Slack: sending ping.";
-					$slack_rtm->ping;
-				}
-			);
 		}
 	);
 
-	$slack_rtm->on(
+	$slack_bot->on(
 		'message' => sub {
 			my($rtm, $message) = @_;
 			eval{
@@ -191,7 +198,7 @@ sub slack_start{
 		}
 	);
 
-	$slack_rtm->start;
+	$slack_bot->start;
 }
 
 # slackのチャンネルにメッセージを送る
@@ -199,7 +206,7 @@ sub relay_to_slack{
 	my($msg)=@_;
 	# $msg はUTF8フラグつきの文字列
 	eval{
-		$slack_rtm->send(
+		$slack_bot->send(
 			{
 				type => 'message'
 				,channel => $slack_channel_id
@@ -423,7 +430,7 @@ sub on_message {
 sub bot_connect($){
 	my($bot)=@_;
 	if( $bot->{irc}->is_connected ){
-		console "%s: already connected. ",$bot->{Name};
+		# console "%s: already connected. ",$bot->{Name};
 		return;
 	}else{
 		my $now = time;
