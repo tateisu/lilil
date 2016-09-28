@@ -160,7 +160,8 @@ sub send {
 			warn "Cannot send because the connection is finished";
 		}else{
 			$msg->{id} = $self->{id}++;
-			$self->{conn}->send(encode_json($msg));
+			my $json = encode_json($msg);
+			$self->{conn}->send($json);
 		}
 	};
 	$@ and warn $@;

@@ -117,6 +117,7 @@ sub update_slack_cache {
 
 my $slack_bot;
 my $slack_last_connection_start = 0;
+my $slack_bot_ready;
 
 sub slack_start{
 	
@@ -135,6 +136,7 @@ sub slack_start{
 	}
 	$slack_last_connection_start = $now;
 
+	$slack_bot_ready = 0;
 
 	console "Slack: connection start..";
 
@@ -158,11 +160,13 @@ sub slack_start{
 			console "Slack: connection finished.";
 			$slack_bot->close;
 			undef $slack_bot;
+			undef $slack_bot_ready;
 		}
 	);
 	$slack_bot->on(
 		'hello' => sub {
 			console "Slack: connection ready.";
+			$slack_bot_ready = 1;
 		}
 	);
 
@@ -194,8 +198,11 @@ sub slack_start{
 				# 自分の発言はリレーしないようにする
 				return if $from eq $slack_bot_name;
 
-				# メッセージの宛先が目的のチャンネルでないなら無視する
-				return if $slack_channel_id ne $message->{channel};
+				# メッセージの宛先が定義されていて、しかし目的のチャンネルでないなら無視する
+				if( $message->{channel} and $message->{channel} ne $slack_channel_id ){
+					console "destination not matcn. %s",Data::Dump::dump($message);
+					return;
+				}
 
 				# subtype によっては特殊な出力が必要
 				if( $message->{subtype} eq "channel_join" ){
@@ -257,6 +264,10 @@ sub decode_slack_entity{
 	return $msg;
 }
 
+my @cue;
+my $cue_oldest_time;
+
+
 # slackのチャンネルにメッセージを送る
 sub relay_to_slack{
 	my($msg)=@_;
@@ -265,12 +276,29 @@ sub relay_to_slack{
 		$msg =~ s/&/&amp;/g;
 		$msg =~ s/</&lt;/g;
 		$msg =~ s/>/&gt;/g;
-		
+
+		$cue_oldest_time = time if not @cue;
+		push @cue,$msg;
+	}
+}
+
+sub flush_cue{
+	return if not @cue;
+	return if not $slack_bot or not $slack_bot_ready;
+
+	my $delta = time - $cue_oldest_time;
+	return if $delta < 15;
+
+	my $msg = join "\n",@cue;
+	@cue = ();
+
+	eval{
 		$slack_bot->send(
 			{
 				type => 'message'
 				,channel => $slack_channel_id
 				,text => $msg
+			#	,mrkdwn => JSON::false
 			}
 		);
 	};
@@ -515,11 +543,21 @@ sub bot_ping($){
 	}
 }
 
+my @duplicate_check;
+
 # $msg は UTF8フラグつきの文字列であること
 sub relay_to_irc{
 	my($msg)=@_;
+	
 	eval{
 		if( $relay_irc_bot and $relay_irc_channel ){
+			if( grep {$_ eq $msg } @duplicate_check ){
+				console "SlackToIRC: omit duplicate message $msg";
+				return;
+			}
+			push @duplicate_check,$msg;
+			shift @duplicate_check if @duplicate_check > 10;
+
 			console "SlackToIRC: $relay_irc_channel $msg ";
 			$relay_irc_bot->{irc}->send_msg( NOTICE => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
 		}
@@ -532,8 +570,6 @@ sub relay_to_irc{
 
 my $timer = AnyEvent->timer(
 	interval => 1 , cb => sub {
-		console "Timer";
-		
 		{
 			my $bot = $config->{irc_server};
 
@@ -549,6 +585,8 @@ my $timer = AnyEvent->timer(
 
 		# Slack接続のリトライ
 		slack_start();
+		
+		flush_cue();
 	}
 );
 
