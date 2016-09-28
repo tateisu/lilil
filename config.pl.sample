@@ -8,6 +8,7 @@ use warnings;
 	slack_bot_api_token => 'write slack bot api access token',
 	slack_channel_name => 'write slack channel name. ex )#tate-bot-test',
 	slack_bot_name => 'write slack bot name. ex)tate-bot',
+	slack_user_list_interval => 300,
 
 	irc_server => {
 		# ログに出るサーバ名
@@ -41,5 +42,6 @@ use warnings;
 #			qr/^tate.+\Q!~tATE-0dBPg@\E/i,
 		],
 		
+		ping_interval => 60,
 	},
 };

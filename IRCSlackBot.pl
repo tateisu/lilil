@@ -11,14 +11,11 @@ use Encode;
 use Time::HiRes qw(time);
 use JIS4IRC;
 
-require POE::Wheel::Run;
-require POE::Component::Client::DNS;
-require POE::Component::IRC;
-use POE qw(Component::IRC);
 use AnyEvent;
+use AnyEvent::IRC::Connection;
 use AnyEvent::SlackRTM;
 use AnyEvent::HTTP;
-
+   
 binmode STDOUT, ":utf8";
 binmode STDERR, ":utf8";
 
@@ -29,6 +26,10 @@ my $debug = 0;
 
 our $TAG = '$$TAG$$';
 sub console($;$$$$$$$$$$$$$$$$){
+	my @lt = localtime;
+	$lt[5]+=1900;
+	$lt[4]+=1;
+	printf STDERR "%d:%02d:%02d_%d:%02d:%02d ",reverse @lt[0..5];
 	printf STDERR @_;
 	print STDERR "\n";
 }
@@ -38,6 +39,9 @@ sub console($;$$$$$$$$$$$$$$$$){
 my $config_file = shift // 'config.pl';
 my $config = do $config_file;
 $@ and die "$config_file : $@\n";
+
+my $irc_ping_interval = $config->{irc_server}{ping_interval} || 60;
+$irc_ping_interval = 10 if $irc_ping_interval < 10;
 
 my $URL_CHANNEL_LIST = "https://slack.com/api/channels.list";
 my $URL_USER_LIST = "https://slack.com/api/users.list";
@@ -77,11 +81,13 @@ sub find_channel_id{
 # Slack ユーザ名の一覧を更新
 my $slack_user_map ={};
 my $slack_user_map_update =0;
+my $slack_user_map_interval = $config->{slack_user_list_interval};
+
 sub update_slack_cache {
 
 	# 不必要ならキャッシュ更新を控える
 	my $now = time;
-	return if $now - $slack_user_map_update < 5*60;
+	return if $now - $slack_user_map_update < $slack_user_map_interval;
 
 	$slack_user_map_update = $now;
 
@@ -109,16 +115,30 @@ sub update_slack_cache {
 
 my $slack_rtm;
 my $keep_alive;
+my $slack_last_connection_start = 0;
 
 sub slack_start{
+	
+	if( $slack_rtm ){
+		console "Slack: already connected.";
+		return;
+	}
+	
+	my $now = time;
+	my $remain = $slack_last_connection_start + 60 -$now;
+	if( $remain > 0 ){
+		console "Slack: waiting $remain seconds to restart connection.";
+		return;
+	}
+	$slack_last_connection_start = $now;
 
-	update_slack_cache();
+	console "Slack: connection start..";
 
 	$slack_rtm = AnyEvent::SlackRTM->new($slack_bot_token);
 
 	$slack_rtm->on(
 		'finish' => sub {
-			print "Slack Connection finished.\n";
+			console "Slack: connection finished.";
 			undef $slack_rtm;
 			undef $keep_alive;
 		}
@@ -126,17 +146,14 @@ sub slack_start{
 
 	$slack_rtm->on(
 		'hello' => sub {
-			print "Slack Connection ready.\n";
+			console "Slack: connection ready.";
 
 			$keep_alive = AnyEvent->timer(
 				interval => 60
 				, cb => sub {
 					# Pingを送るらしいがログに出てこない。いつ呼ばれるんだろう
-					console "Slack Connection Ping.\n";
+					console "Slack: sending ping.";
 					$slack_rtm->ping;
-					
-					# ユーザ名キャッシュを定期的に更新する
-					update_slack_cache();
 				}
 			);
 		}
@@ -194,67 +211,13 @@ sub relay_to_slack{
 }
 
 ###########################################################
-
-my $relay_irc_bot ;
-my $relay_irc_channel;
-
-# $msg は UTF8フラグつきの文字列であること
-sub relay_to_irc{
-	my($msg)=@_;
-	eval{
-		if( $relay_irc_bot and $relay_irc_channel ){
-			console "SlackToIRC: $relay_irc_channel $msg ";
-			$relay_irc_bot->{irc}->yield( notice => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
-		}
-	};
-	$@ and console $@;
-}
-
-############################################################
-
-sub handle_message($$$$$$){
-	my( $kernel,$heap,$bot,$from,$channel,$msg) = @_;
-
-	if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*tateURL>exit\s*\z/ ){
-		console "%s %s: exit required by (%s),said (%s)",$bot->{Name},fix_channel_name($bot->{decode}($channel),1),$from,$msg;
-		$bot->{irc}->yield( part => $channel );
-	}else{
-		$from =~ s/!.*//;
-		relay_to_slack("<$from> $msg");
-	}
-}
-
-###################################################
 # IRC接続の管理
 
-POE::Session->create(
-	inline_states => {
-		_start	   => \&bot_start, # セッション開始
-		bot_timer => \&bot_timer, # 定期的に実行
-		
-		irc_connected	 => \&on_connect, # 接続できた
-		irc_disconnected => \&on_disconnect, # 接続終了
-		connection_ping  => \&on_connection_ping,  # 再接続を行う
-		# サーバ接続直後
-		irc_001    => \&on_001,  # 自分のprefixを調べる
-		irc_376    => \&on_motd, # end of MOTD
-		irc_422    => \&on_motd, # no MOTD
-		# チャンネルへの参加
-		irc_join   => \&on_join,   # チャンネルに入った
-		irc_kick   => \&on_kick,   # 蹴られた
-		irc_invite => \&on_invite, # 呼ばれた
-		# メッセージ処理
-		irc_public => \&on_public,
-		irc_msg => \&on_public,
-		# 子プロセスのイベント
-		child_stdout => \&child_stdout,
-		child_stderr => \&child_stderr,
-		child_error  => \&child_error,
-		child_close  => \&child_close,
-		child_signal => \&child_signal,
-	},
-);
-
+sub lc_irc($){
+	my($s)=@_;
+	$s =~ tr/\[\]\\/\{\}\|/;
+	return lc $s;
+}
 
 sub fix_channel_name($$){
 	my($channel,$short_safe_channel)=@_;
@@ -266,197 +229,264 @@ sub fix_channel_name($$){
 	return $channel;
 }
 
+my $relay_irc_bot ;
+my $relay_irc_channel;
 
-# セッション開始時に呼ばれる
-sub bot_start {
-	my $kernel	= $_[KERNEL];
-	my $heap	= $_[HEAP];
-	my $session = $_[SESSION];
-	# IRCオブジェクトを登録して接続する
-	console "register IRC component..";
-	
-	{
-		my $bot = $config->{irc_server};
-		
-		if( not $bot->{encode} ){
-			if($bot->{is_jis} ){
-				$bot->{encode} = sub{ JIS4IRC::fromEUCJP( $eucjp->encode($_[0])); };
-				$bot->{decode} = sub{ $eucjp->decode( JIS4IRC::toEUCJP(  $_[0])); };
-			}else{
-				$bot->{encode} = sub{ $utf8->encode($_[0]); };
-				$bot->{decode} = sub{ $utf8->decode($_[0]); };
-			}
-		}
+sub on_motd;
+sub on_message;
 
-		$bot->{irc} = POE::Component::IRC->spawn();
-		$bot->{irc}->{$TAG} = $bot;
-		$bot->{irc}->yield( register => 'all' );
-		# チャネル名を正規化しておく
-		$bot->{JoinChannelFixed} = {
-			map{ (fix_channel_name($_,0),1) }
-			@{$bot->{JoinChannel}}
-		};
-	}
-	{
-		my $bot = $config->{irc_server};
-		bot_connect( $bot,$bot->{irc} );
-	}
-	# タイマー開始
-	$kernel->delay( bot_timer => 60 );
-}
+# 一回だけの初期化
+{
+	console "register IRC bot...";
 
-sub bot_timer{
-	my $kernel	= $_[KERNEL];
-	my $heap	= $_[HEAP];
-	my $session = $_[SESSION];
-	# 次回のタイマー
-	$kernel->delay( bot_timer => 60 );
-	# 接続開始
-	{
-		my $bot = $config->{irc_server};
-		bot_connect( $bot );
-	}
-}
+	my $bot = $config->{irc_server};
 
-###############################
-# 接続状態の管理
-
-sub bot_connect($){
-	my($bot)=@_;
-	if( $bot->{irc}{connected} ){
-		## console "%s: already connected. ",$bot->{Name};
+	if($bot->{is_jis} ){
+		$bot->{encode} = sub{ JIS4IRC::fromEUCJP( $eucjp->encode($_[0])); };
+		$bot->{decode} = sub{ $eucjp->decode( JIS4IRC::toEUCJP(  $_[0])); };
 	}else{
-		console "%s: connecting..",$bot->{Name};
-		$bot->{irc}->yield( connect => $bot->{ServerSpec} );
+		$bot->{encode} = sub{ $utf8->encode($_[0]); };
+		$bot->{decode} = sub{ $utf8->decode($_[0]); };
 	}
-}
 
-sub on_connect {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
-	console "%s: connected to %s. please wait authentication..",$bot->{Name},$_[ARG0];
-	$_[KERNEL]->delay( connection_ping => 60, $bot);
-}
+	$bot->{last_connection_start} = 0;
+	$bot->{last_ping_sent} =0;
 
-sub on_disconnect {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
-	console "%s: disconnected.",$bot->{Name};
-}
+	# チャネル名を正規化しておく
+	$bot->{JoinChannelFixed} = {
+		map{ (fix_channel_name($_,0),1) }
+		@{$bot->{JoinChannel}}
+	};
 
-sub on_connection_ping{
-	my $bot = $_[ARG0];
-	if( $bot->{irc}->connected() && $bot->{server_prefix} ){
-		$bot->{irc}->yield( ping => $bot->{server_prefix} );
-		$_[KERNEL]->delay( connection_ping => 60, $bot);
-	}
-	if( not $slack_rtm ){
-		slack_start();
-	}
-}
+	my $con = $bot->{irc} = new AnyEvent::IRC::Connection;
+	$con->heap->{bot} = $bot;
 
-###############################
-# 接続直後の初期化
+	$con->reg_cb (
 
-sub on_001 {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
-	my $from = $_[ARG0];
-	my $line = $bot->{encode}($_[ARG1]);
-	console "%s: 001 from=%s line=%s",$bot->{Name},$from,$line;
-	# 自分のprefixを覚えておく
-	$line =~ /(\S+\!\S+\@\S+)/ and $bot->{user_prefix} = $1;
-	$bot->{server_prefix} = $from;
+		#接続終了
+		disconnect => sub {
+			my ($con,$reason) = @_;
+			console "%s: disconnected. reason=$reason";
+		},
+
+		# 接続できた
+		connect=> sub{
+			my ($con,$error) = @_;
+			my $bot = $con->heap->{bot};
+			if( $error ){
+				console "%s: connection failed. error=$error",$bot->{Name};
+			}else{
+				console "%s: connected to %s:%s. please wait authentication..",$bot->{Name},$con->{host},$con->{port};
+				$con->send_msg (NICK => $bot->{ServerSpec}{Nick});
+				$con->send_msg (USER => $bot->{ServerSpec}{Username}, '*', '0',$bot->{encode}($bot->{ServerSpec}{Ircname}));
+			}
+		},
+
+		# 認証完了
+		irc_001 => sub {
+			my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			my $bot = $con->heap->{bot};
+			#
+			my $from = $args->{prefix}; # サーバ名
+			my $line = $bot->{decode}( $args->{params}[-1]);
+			console "%s: 001 from=%s line=%s",$bot->{Name},$from,$line;
+			## console "$args->{prefix} says I'm in the IRC: $args->{params}->[-1]!";
+			
+			# 自分のprefixを覚えておく
+			$bot->{server_prefix} = $from;
+			$line =~ /(\S+\!\S+\@\S+)/ and $bot->{user_prefix} = $1;
+		},
+
+		# MOTD終了
+		irc_376 => \&on_motd, # end of MOTD
+		irc_422 => \&on_motd, # no MOTD
+
+		irc_join => sub{
+			my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			my $bot = $con->heap->{bot};
+			#
+			my $from = $args->{prefix}; # joinした人
+			my $channel_raw = $args->{params}[0];
+			my $channel = fix_channel_name($bot->{decode}($channel_raw),1);
+			
+			if( $from ne $bot->{user_prefix} ){
+				# 他人のjoin
+				# auto-op check
+				for my $re (@{ $bot->{AutoOpRegEx} }){
+					if( $from =~ /$re/ ){
+						$from =~ /^([^!]+)/;
+						console "%s %s: +o to %s",$bot->{Name},$channel,$1;
+						$bot->send_msg( MODE => $channel_raw , "+o",$1 );
+						last;
+					}
+				}
+			}else{
+				console "%s %s: join %s",$bot->{Name},$channel,$from;
+				$bot->{JoinChannelFixed}{$channel} or $bot->{CurrentChannel}{$channel}=1;
+
+				$relay_irc_bot = $bot;
+				$relay_irc_channel = $channel_raw;
+			}
+		},
+		
+		irc_kick => sub{
+			my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			my $bot = $con->heap->{bot};
+			#
+			my $from = $args->{prefix}; # joinした人
+			
+			my $line = $bot->{encode}( $args->{params}[0]);
+			my $channel_raw = $args->{params}[0];
+			my $channel = fix_channel_name($bot->{decode}($channel_raw),1);
+			my $who = $args->{params}[1];
+			my $msg = $bot->{decode}( $args->{params}[-1] );
+
+			$bot->{user_prefix} =~ /^([^!]+)/;
+			my $my_nick = $1;
+
+			if( lc_irc($who) eq lc_irc($bot->{user_prefix})
+			or	lc_irc($who) eq lc_irc($my_nick)
+			){
+				# 自分がkickされた
+				console "%s %s: kick (%s) by (%s) %s",$bot->{Name},$channel,$who,$from,$msg;
+				delete $bot->{CurrentChannel}{$channel};
+			}else{
+				# 他人がkickされた
+			}
+		},
+		
+
+		irc_invite => sub{
+			my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			my $bot = $con->heap->{bot};
+
+			my $from = $args->{prefix}; # inviteした人
+			my $channel_raw = $args->{params}[0];
+			my $channel = fix_channel_name($bot->{decode}($channel_raw),1);
+			
+			console "%s: invited to %s by %s",$bot->{Name},$channel,$from;
+			## $con->send_msg( JOIN => $channel_raw );
+		},
+
+		# メッセージ処理
+		irc_privmsg => \&on_message,
+		irc_notice => \&on_message,
+	);
 }
 
 sub on_motd {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
+	my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+	my $bot = $con->heap->{bot};
+	#
 	console "%s: end of MOTD.",$bot->{Name};
 	for my $channel (keys %{ $bot->{JoinChannelFixed} } ){
 		console "join to $channel";
-		my $arg = $bot->{encode}( $channel );
-		$bot->{irc}->yield( join => $arg );
+		$con->send_msg( JOIN => $bot->{encode}( $channel ) );
 	}
 	for my $channel (keys %{ $bot->{CurrentChannel} } ){
 		console "join to $channel";
-		my $arg = $bot->{encode}( $channel );
-		$bot->{irc}->yield( join => $arg );
+		$con->send_msg( JOIN => $bot->{encode}( $channel ) );
 	}
 }
 
-sub on_join {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
-	my $who =  $_[ARG0];
-	my $channel =  fix_channel_name($bot->{decode}($_[ARG1]),1);
+sub on_message {
+	my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+	my $bot = $con->heap->{bot};
 
-	if( $who ne $bot->{user_prefix} ){
-		# 他人のjoin
-		# auto-op check
-		for my $re (@{ $bot->{AutoOpRegEx} }){
-			if( $who =~ /$re/ ){
-				$who =~ /^([^!]+)/;
-				console "%s %s: +o to %s",$bot->{Name},$channel,$1;
-				$bot->{irc}->yield( mode => $_[ARG1] , "+o",$1 );
-				last;
-			}
-		}
-		return;
-	}else{
-		console "%s %s: join %s",$bot->{Name},$channel,$who;
-		$bot->{JoinChannelFixed}{$channel} or $bot->{CurrentChannel}{$channel}=1;
-		
-		$relay_irc_bot = $bot;
-		$relay_irc_channel = $_[ARG1];
+	my $from = $args->{prefix};
+	my $command = $args->{command};
 
+	my $channel_raw = $args->{params}[0];
+	if(ref $channel_raw ){
+		$channel_raw = shift @$channel_raw;
 	}
-}
+	my $channel = fix_channel_name($bot->{decode}($channel_raw),1);
 
-sub lc_irc($){
-	my($s)=@_;
-	$s =~ tr/\[\]\\/\{\}\|/;
-	return lc $s;
-}
-
-sub on_kick {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
-	my $from = $_[ARG0];
-	my $channel =  fix_channel_name($bot->{decode}($_[ARG1] ),1);
-	my $who =  $_[ARG2];
-	my $msg = $bot->{decode}( $_[ARG3] );
+	my $msg = $bot->{decode}( $args->{params}[-1]);
+	
+	console "%s %s %s %s",$command,$from,$channel,$msg;
+	
+	return if $command =~ /notice/i;
 	
 	$bot->{user_prefix} =~ /^([^!]+)/;
 	my $my_nick = $1;
 
-	if( lc_irc($who) eq lc_irc($bot->{user_prefix})
-	or	lc_irc($who) eq lc_irc($my_nick)
-	){
-		# 自分がkickされた
-		console "%s %s: kick (%s) by (%s) %s",$bot->{Name},$channel,$who,$from,$msg;
-		delete $bot->{CurrentChannel}{$channel};
+	if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>exit\s*\z/ ){
+		console "%s %s: exit required by (%s),said (%s)",$bot->{Name},fix_channel_name($bot->{decode}($channel),1),$from,$msg;
+		$con->send_msg( PART => $channel_raw );
 	}else{
-		# 他人がkickされた
+		$from =~ s/!.*//;
+		relay_to_slack("<$from> $msg");
 	}
 }
 
-sub on_invite {
-#	my $bot = $_[SENDER]->get_heap()->{$TAG};
-#	my $who =  $_[ARG0];
-#	my $channel = $_[ARG1];
-#	console "%s: invited to %s by %s",$bot->{Name},fix_channel_name($bot->{decode}($channel),1),$who;
-#	$bot->{irc}->yield( join => $channel );
-}
-
-sub on_public {
-	my $bot = $_[SENDER]->get_heap()->{$TAG};
-	my $from = $_[ARG0];
-	my $channel = $_[ARG1];
-	my $msg = $bot->{decode}($_[ARG2]);
-	if(ref $channel ){
-		$channel = shift @$channel;
+sub bot_connect($){
+	my($bot)=@_;
+	if( $bot->{irc}->is_connected ){
+		console "%s: already connected. ",$bot->{Name};
+		return;
+	}else{
+		my $now = time;
+		if( $now - $bot->{last_connection_start} >= 60 ){
+			$bot->{last_connection_start} = $now;
+			console "%s: connection start. %s:%s",$bot->{Name}, $bot->{ServerSpec}{Server},$bot->{ServerSpec}{Port};
+			$bot->{irc}->connect( $bot->{ServerSpec}{Server},$bot->{ServerSpec}{Port});
+		}
 	}
-#	console "on_public %s %s",$bot->{decode}($channel),$msg;
-	handle_message( $_[KERNEL],$_[HEAP],$bot,$from,$channel,$msg);
 }
 
+sub bot_ping($){
+	my($bot)=@_;
 
-slack_start();
+	if( $bot->{irc}->is_connected && $bot->{server_prefix} ){
+		my $now = time;
+		if( $now - $bot->{last_ping_sent} >= $irc_ping_interval ){
+			$bot->{last_ping_sent} = $now;
+			console "%s: sending ping.",$bot->{Name};
+			$bot->{irc}->send_msg( PING =>  $bot->{server_prefix} );
+		}
+	}
+}
 
-$poe_kernel->run();
+# $msg は UTF8フラグつきの文字列であること
+sub relay_to_irc{
+	my($msg)=@_;
+	eval{
+		if( $relay_irc_bot and $relay_irc_channel ){
+			console "SlackToIRC: $relay_irc_channel $msg ";
+			$relay_irc_bot->{irc}->send_msg( NOTICE => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
+		}
+	};
+	$@ and console $@;
+}
+
+################################################################################
+# タイマー
+
+my $timer = AnyEvent->timer(
+	interval => 1 , cb => sub {
+		console "Timer";
+		
+		{
+			my $bot = $config->{irc_server};
+
+			# IRC接続のリトライ
+			bot_connect( $bot );
+
+			# 既に接続しているなら一定時間でPINGを送る
+			bot_ping($bot);
+		}
+
+		# ユーザ名キャッシュを定期的に更新する
+		update_slack_cache();
+
+		# Slack接続のリトライ
+		slack_start();
+	}
+);
+
+###############################
+
+my $c = AnyEvent->condvar;
+$c->wait;
 exit 0;

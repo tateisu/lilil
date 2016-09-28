@@ -8,11 +8,8 @@ use Data::Dump;
 use Furl;
 use Encode;
 use Time::HiRes qw(time);
-require POE::Wheel::Run;
-require POE::Component::Client::DNS;
-require POE::Component::IRC;
-use POE qw(Component::IRC);
 use AnyEvent;
+use AnyEvent::IRC::Connection;
 use AnyEvent::SlackRTM;
 use AnyEvent::HTTP;
 
