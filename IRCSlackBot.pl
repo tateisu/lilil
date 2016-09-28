@@ -170,6 +170,17 @@ sub slack_start{
 		'message' => sub {
 			my($rtm, $message) = @_;
 			eval{
+				$message->{subtype}='' if not defined $message->{subtype};
+				if( $message->{subtype} eq 'message_changed'){
+					$message = $message->{message};
+					$message->{subtype}='' if not defined $message->{subtype};
+				}
+
+				if( not $message->{user} ){
+					console "missing user? %s",Data::Dump::dump($message);
+					$message->{user}='?';
+				}
+
 				# 発言者のIDと名前を調べる
 				my $member;
 				if( $message->{user_profile} ){
@@ -184,14 +195,23 @@ sub slack_start{
 				return if $from eq $slack_bot_name;
 
 				# subtype によっては特殊な出力が必要
-				if( $message->{subtype} and $message->{subtype} eq "channel_join" ){
+				if( $message->{subtype} eq "channel_join" ){
 					relay_to_irc( "${from} さんが参加しました");
-				}elsif( $message->{subtype} and $message->{subtype} eq "channel_leave" ){
+				}elsif( $message->{subtype} eq "channel_leave" ){
 					relay_to_irc( "${from} さんが退出しました");
 				}else{
-					console Data::Dump::dump($message) if $message->{subtype};
+					console "missing subtype? %s",Data::Dump::dump($message) if $message->{subtype};
+				
 					my $from =  (not defined $member ) ? $message->{user} : $member->{name};
-					relay_to_irc( "<$from> $message->{text}");
+
+					my $msg = $message->{text};
+					if( not defined $msg and defined $message->{message} ){
+						$msg = $message->{message}{text};
+					}
+					
+					if( defined $msg and length $msg){
+						relay_to_irc( "<$from> ".decode_slack_message($msg));
+					}
 				}
 			};
 			$@ and console $@;
@@ -201,11 +221,45 @@ sub slack_start{
 	$slack_bot->start;
 }
 
+sub decode_slack_message{
+	my($src) = @_;
+	my $after = "";
+	my $start = 0;
+	my $end = length $src;
+	while( $src =~ /<([^>]*)>/g ){
+		my $link = $1;
+		$after .= decode_slack_entity( substr($src,$start,$-[0]) );
+		$start = $+[0];
+		#
+		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
+			$after .= decode_slack_entity( $1.$2 );
+		}elsif( $link =~ /[^\|]*\|(.+)/ ){
+			$after .= decode_slack_entity( $1 );
+		}else{
+			$after .= decode_slack_entity( $link );
+		}
+	}
+	$start < $end and $after .= decode_slack_entity( substr($src,$start,$end) );
+
+	return $after;
+}
+sub decode_slack_entity{
+	my($msg)=@_;
+	$msg =~ s/&lt;/</g;
+	$msg =~ s/&gt;/>/g;
+	$msg =~ s/&amp;/&/g;
+	return $msg;
+}
+
 # slackのチャンネルにメッセージを送る
 sub relay_to_slack{
 	my($msg)=@_;
 	# $msg はUTF8フラグつきの文字列
 	eval{
+		$msg =~ s/&/&amp;/g;
+		$msg =~ s/</&lt;/g;
+		$msg =~ s/>/&gt;/g;
+		
 		$slack_bot->send(
 			{
 				type => 'message'
