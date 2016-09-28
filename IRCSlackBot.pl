@@ -194,6 +194,9 @@ sub slack_start{
 				# 自分の発言はリレーしないようにする
 				return if $from eq $slack_bot_name;
 
+				# メッセージの宛先が目的のチャンネルでないなら無視する
+				return if $slack_channel_id ne $message->{channel};
+
 				# subtype によっては特殊な出力が必要
 				if( $message->{subtype} eq "channel_join" ){
 					relay_to_irc( "${from} さんが参加しました");
