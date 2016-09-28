@@ -223,12 +223,14 @@ sub slack_start{
 
 sub decode_slack_message{
 	my($src) = @_;
+	console $src;
+	
 	my $after = "";
 	my $start = 0;
 	my $end = length $src;
 	while( $src =~ /<([^>]*)>/g ){
 		my $link = $1;
-		$after .= decode_slack_entity( substr($src,$start,$-[0]) );
+		$after .= decode_slack_entity( substr($src,$start,$-[0] - $start) );
 		$start = $+[0];
 		#
 		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
@@ -239,10 +241,11 @@ sub decode_slack_message{
 			$after .= decode_slack_entity( $link );
 		}
 	}
-	$start < $end and $after .= decode_slack_entity( substr($src,$start,$end) );
+	$start < $end and $after .= decode_slack_entity( substr($src,$start,$end -$start ) );
 
 	return $after;
 }
+
 sub decode_slack_entity{
 	my($msg)=@_;
 	$msg =~ s/&lt;/</g;
