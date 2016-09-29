@@ -50,6 +50,7 @@ my $URL_USER_LIST = "https://slack.com/api/users.list";
 my $slack_bot_token = $config->{slack_bot_api_token};
 my $slack_channel_id = find_channel_id( $config->{slack_channel_name} );
 my $slack_bot_name = $config->{slack_bot_name};
+my $slack_dont_relay_notice= $config->{slack_dont_relay_notice};
 console "Slack Channel: $slack_channel_id,$config->{slack_channel_name}";
 
 
@@ -176,7 +177,9 @@ sub slack_start{
 			eval{
 				$message->{subtype}='' if not defined $message->{subtype};
 				if( $message->{subtype} eq 'message_changed'){
+					my $old_channel = $message->{channel};
 					$message = $message->{message};
+					$message->{channel} = $old_channel if not $message->{channel};
 					$message->{subtype}='' if not defined $message->{subtype};
 				}
 
@@ -501,7 +504,7 @@ sub on_message {
 	
 	console "%s %s %s %s",$command,$from,$channel,$msg;
 	
-	return if $command =~ /notice/i;
+	return if $slack_dont_relay_notice and $command =~ /notice/i;
 	
 	$bot->{user_prefix} =~ /^([^!]+)/;
 	my $my_nick = $1;
