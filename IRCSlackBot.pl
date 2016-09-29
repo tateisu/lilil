@@ -48,73 +48,7 @@ $@ and die "$config_file : $@\n";
 my $irc_ping_interval = $config->{irc_server}{ping_interval} || 60;
 $irc_ping_interval = 10 if $irc_ping_interval < 10;
 
-my $URL_CHANNEL_LIST = "https://slack.com/api/channels.list";
-my $URL_USER_LIST = "https://slack.com/api/users.list";
-my $slack_bot_token = $config->{slack_bot_api_token};
-my $slack_channel_id = find_channel_id( $config->{slack_channel_name} );
-my $slack_bot_name = $config->{slack_bot_name};
-my $slack_dont_relay_notice= $config->{slack_dont_relay_notice};
-console "Slack Channel: $slack_channel_id,$config->{slack_channel_name}";
 
-
-# Slack チャンネル名からチャンネルIDを探す
-sub find_channel_id{
-	my($channel_name)=@_;
-	my $channel_id;
-
-	eval{
-		my $furl = Furl->new( agent => "IRCSlackBot" );
-    	my $res = $furl->get( "$URL_CHANNEL_LIST?token=$slack_bot_token");
-    	die $res->status_line unless $res->is_success;
-		my $json = decode_json($res->content);
-		if( not $json->{ok} ){
-			die "channel.list error=$json->{error}\n";
-		}else{
-		    for my $channel ( @{ $json->{channels} } ){
-				if( "\#$channel->{name}" eq $channel_name ){
-					$channel_id = $channel->{id};
-					last;
-				}
-			}
-			$channel_id or die "missing Slack channel '$channel_name'";
-		}
-	};
-	$@ and die "$@\n";
-	
-	return $channel_id;
-}
-
-# Slack ユーザ名の一覧を更新
-my $slack_user_map ={};
-my $slack_user_map_update =0;
-my $slack_user_map_interval = $config->{slack_user_list_interval};
-
-sub update_slack_cache {
-
-	# 不必要ならキャッシュ更新を控える
-	my $now = time;
-	return if $now - $slack_user_map_update < $slack_user_map_interval;
-
-	$slack_user_map_update = $now;
-
-	console "get slack user list..";
-	http_get "$URL_USER_LIST?token=$slack_bot_token", sub {
-		my($data,$headers)=@_;
-		console "parse slack user list..";
-		eval{
-			my $json = decode_json($data);
-		    if( not $json->{ok} ){
-				console "unable to get user list, Slack returned an error: $json->{error}"
-			}else{
-			    for my $member ( @{ $json->{members} } ){
-					$slack_user_map->{ $member->{id} } = $member;
-				}
-				console "slack user list size=".scalar(%$slack_user_map);
-			}
-		};
-		$@ and console $@;
-	};
-}
 
 #########################################################################
 
@@ -122,6 +56,15 @@ sub update_slack_cache {
 my $slack_bot;
 my $slack_last_connection_start = 0;
 my $slack_bot_ready;
+
+my $slack_bot_token = $config->{slack_bot_api_token};
+my $slack_dont_relay_notice= $config->{slack_dont_relay_notice};
+my $slack_bot_id = undef; 
+my $slack_channel_id = undef;
+
+my $slack_user_map ={};
+my $slack_user_map_update =0;
+my $slack_user_map_interval = $config->{slack_user_list_interval};
 
 sub slack_start{
 	
@@ -147,22 +90,29 @@ sub slack_start{
 	$slack_bot = SlackBot->new(
 		token => $slack_bot_token,
 		ping_interval => 60,
-		cb_error => sub{
-			my($error)=@_;
-			console "Slack: error: $error";
-			$slack_bot->close;
+		user_agent => 'tateisu/perl-irc-slack-relay-bot',
+	);
+
+	$slack_bot->on(
+		$SlackBot::EVENT_CATCH_UP => sub {
+			my($rtm, $event_type, @args) = @_;
+			console "Slack: event=$event_type %s",Data::Dump::dump(\@args);
+		}
+	);
+
+	$slack_bot->on(
+		$SlackBot::EVENT_ERROR => sub {
+			my($sb,$event_type,$error)=@_;
+			console "Slack: $error";
+			$sb->close;
 			undef $slack_bot;
-		},
-		cb_warn => sub{
-			my($msg)=join ' ',@_;
-			console "Slack: warn: $msg";
-		},
+			undef $slack_bot_ready;
+		}
 	);
 
 	$slack_bot->on(
 		'finish' => sub {
 			console "Slack: connection finished.";
-			$slack_bot->close;
 			undef $slack_bot;
 			undef $slack_bot_ready;
 		}
@@ -174,9 +124,67 @@ sub slack_start{
 		}
 	);
 
+
+	$slack_bot->on(
+		$SlackBot::EVENT_SELF => sub {
+			my($rtm, $event_type, $data) = @_;
+			$slack_bot_id = $data->{id};
+			console "Slack: me: id=$data->{id},name=$data->{name}";
+		}
+	);
+
+	$slack_bot->on(
+		$SlackBot::EVENT_CHANNELS => sub {
+			my($rtm, $event_type, $data) = @_;
+		    for my $channel ( @$data ){
+				if( "\#$channel->{name}" eq $config->{slack_channel_name} ){
+					$slack_channel_id = $channel->{id};
+					console "Slack Channel: $channel->{id},\#$channel->{name}";
+					last;
+				}
+			}
+			$slack_channel_id or console "missing Slack channel '$config->{slack_channel_name}'";
+		}
+	);
+
+	$slack_bot->on(
+		$SlackBot::EVENT_USERS => sub {
+			my($rtm, $event_type, $data) = @_;
+		    for my $member ( @$data ){
+				$slack_user_map->{ $member->{id} } = $member;
+			}
+			console "slack user list size=".scalar(%$slack_user_map);
+			$slack_user_map_update = time;
+		}
+	);
+
+	$slack_bot->on( $SlackBot::EVENT_TEAM => sub {} );
+	$slack_bot->on( $SlackBot::EVENT_GROUPS => sub {} );
+	$slack_bot->on( $SlackBot::EVENT_MPIMS => sub {} );
+	$slack_bot->on( $SlackBot::EVENT_IMS => sub {} );
+	$slack_bot->on( $SlackBot::EVENT_BOTS => sub {} );
+
+	#送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
+	$slack_bot->on( $SlackBot::EVENT_REPLY_TO => sub {} );
+
+	# https://api.slack.com/events/reconnect_url
+	# The reconnect_url event is currently unsupported and experimental.
+	$slack_bot->on( reconnect_url => sub {} );
+	
+	# https://api.slack.com/events/presence_change
+	# このボットはユーザのアクティブ状態に興味がない
+	$slack_bot->on( presence_change => sub {} );
+
+	# https://api.slack.com/events/user_typing
+	# このボットはユーザの入力中状態に興味がない
+	$slack_bot->on( user_typing => sub {} );
+
+
+
+
 	$slack_bot->on(
 		'message' => sub {
-			my($rtm, $message) = @_;
+			my($rtm, $event_type, $message) = @_;
 			eval{
 				$message->{subtype}='' if not defined $message->{subtype};
 				if( $message->{subtype} eq 'message_changed'){
@@ -191,6 +199,10 @@ sub slack_start{
 					$message->{user}='?';
 				}
 
+				# たまに起動直後に過去の自分の発言を拾ってしまう
+				# 自分の発言はリレーしないようにする
+				return if defined $slack_bot_id and $slack_bot_id eq $message->{user};
+
 				# 発言者のIDと名前を調べる
 				my $member;
 				if( $message->{user_profile} ){
@@ -200,12 +212,12 @@ sub slack_start{
 				}
 				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
 				
-				# たまに起動直後に過去の自分の発言を拾ってしまう
-				# 自分の発言はリレーしないようにする
-				return if $from eq $slack_bot_name;
 
 				# メッセージの宛先が定義されていて、しかし目的のチャンネルでないなら無視する
-				if( $message->{channel} and $message->{channel} ne $slack_channel_id ){
+				if( defined $message->{channel} 
+				and defined $slack_channel_id
+				and $message->{channel} ne $slack_channel_id 
+				){
 					console "destination not matcn. %s",Data::Dump::dump($message);
 					return;
 				}
@@ -296,7 +308,7 @@ sub relay_to_slack{
 
 sub flush_cue{
 	return if not @cue;
-	return if not $slack_bot or not $slack_bot_ready;
+	return if not $slack_bot or not $slack_bot_ready or not $slack_channel_id;
 
 	my $delta = time - $cue_oldest_time;
 	return if $delta < 15;
@@ -316,6 +328,29 @@ sub flush_cue{
 	};
 	$@ and warn $@;
 }
+
+# Slack ユーザ名の一覧を更新
+
+sub update_user_list {
+
+	# SlackBotが準備できていないなら何もしない
+	return if not $slack_bot or not $slack_bot_ready;
+
+	# 前回更新してから一定時間が経過するまで何もしない
+	my $now = time;
+	return if $now - $slack_user_map_update < $slack_user_map_interval;
+
+	$slack_user_map_update = $now;
+	
+	# 更新を開始(非同期API)
+	console "get slack user list..";
+	$slack_bot->get_user_list(sub{
+		my $error = shift;
+		console "Slack user list update failed: $error";
+	});
+}
+
+
 
 ###########################################################
 # IRC接続の管理
@@ -619,12 +654,13 @@ my $timer = AnyEvent->timer(
 			bot_ping($bot);
 		}
 
-		# ユーザ名キャッシュを定期的に更新する
-		update_slack_cache();
-
 		# Slack接続のリトライ
 		slack_start();
-		
+
+		# ユーザ名キャッシュを定期的に更新する
+		update_user_list();
+
+		# Slackに発言を投げるキューの消化
 		flush_cue();
 	}
 );
