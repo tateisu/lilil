@@ -36,6 +36,9 @@ sub console($;$$$$$$$$$$$$$$$$){
 	print STDERR "\n";
 }
 
+sub dnl($){
+	return defined $_[0] and length $_[0];
+}
 
 # 設定ファイルを読む
 my $config_file = shift // 'config.pl';
@@ -218,12 +221,16 @@ sub slack_start{
 					my $from =  (not defined $member ) ? $message->{user} : $member->{name};
 
 					my $msg = $message->{text};
-					if( not defined $msg and defined $message->{message} ){
+					if( defined $message->{message} and not defined $msg ){
 						$msg = $message->{message}{text};
 					}
 					
-					if( defined $msg and length $msg){
-						relay_to_irc( "<$from> ".decode_slack_message($msg));
+					if( dnl $msg ){
+						my @lines = split /[\x0d\x0a]+/,decode_slack_message($msg);
+						for my $line (@lines){
+							next if not dnl $line;
+							relay_to_irc( "<$from> $line");
+						}
 					}
 				}
 			};
@@ -233,6 +240,8 @@ sub slack_start{
 
 	$slack_bot->start;
 }
+
+
 
 sub decode_slack_message{
 	my($src) = @_;
