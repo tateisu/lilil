@@ -513,7 +513,9 @@ sub on_message {
 	
 	console "%s %s %s %s",$command,$from,$channel,$msg;
 	
-	return if $slack_dont_relay_notice and $command =~ /notice/i;
+	my $is_notice = ($command =~ /notice/i);
+	
+	return if $is_notice and $slack_dont_relay_notice;
 	
 	$bot->{user_prefix} =~ /^([^!]+)/;
 	my $my_nick = $1;
@@ -523,7 +525,12 @@ sub on_message {
 		$con->send_msg( PART => $channel_raw );
 	}else{
 		$from =~ s/!.*//;
-		relay_to_slack("<$from> $msg");
+		
+		if( $is_notice ){
+			relay_to_slack("[$from] $msg");
+		}else{
+			relay_to_slack("<$from> $msg");
+		}
 	}
 }
 
