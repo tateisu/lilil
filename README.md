@@ -9,9 +9,8 @@ use Furl;
 use Encode;
 use Time::HiRes qw(time);
 use AnyEvent;
-use AnyEvent::IRC::Connection;
-use AnyEvent::SlackRTM;
 use AnyEvent::HTTP;
+use AnyEvent::IRC::Connection;
 
 # 使い方
 
@@ -36,4 +35,4 @@ use AnyEvent::HTTP;
 - 複数の接続・チャンネルを扱う機能はありません。
 - IRCの発言は最大15秒待機して、複数の発言を1メッセージにまとめてからSlackに送ります
 - IRCのNOTICEメッセージをリレーするかどうかは config.plで選択可能です。
-
+- Slackからのメッセージの取得にはWebSocketのRTM APIを使っています。一部のプロキシ下など、WebSocketが使えない環境では動作しません。
