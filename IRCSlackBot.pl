@@ -513,10 +513,23 @@ sub on_message {
 	
 	console "%s %s %s %s",$command,$from,$channel,$msg;
 	
+	if( not grep {$_ eq $channel} keys %{ $bot->{JoinChannelFixed} } ){
+		console "指定チャンネル宛てではないので無視します";
+		return;
+	}
+	
+	
 	my $is_notice = ($command =~ /notice/i);
-	
-	return if $is_notice and $slack_dont_relay_notice;
-	
+	if( $is_notice and $slack_dont_relay_notice ){
+		console "NOTICEをリレーしない設定なので無視します";
+		return;
+	}
+
+	my $is_action = 0;
+	if( $msg =~ s/\A\x01ACTION\s+(.+)\x01\z/$1/ ){
+		$is_action = 1;
+	}
+
 	$bot->{user_prefix} =~ /^([^!]+)/;
 	my $my_nick = $1;
 
@@ -525,11 +538,18 @@ sub on_message {
 		$con->send_msg( PART => $channel_raw );
 	}else{
 		$from =~ s/!.*//;
-		
-		if( $is_notice ){
-			relay_to_slack("[$from] $msg");
+		if( $is_action ){
+			if( $is_notice ){
+				relay_to_slack("(action) [$from] $msg");
+			}else{
+				relay_to_slack("(action) <$from> $msg");
+			}
 		}else{
-			relay_to_slack("<$from> $msg");
+			if( $is_notice ){
+				relay_to_slack("[$from] $msg");
+			}else{
+				relay_to_slack("<$from> $msg");
+			}
 		}
 	}
 }
