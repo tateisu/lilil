@@ -45,20 +45,48 @@ my $config_file = shift // 'config.pl';
 my $config = do $config_file;
 $@ and die "$config_file : $@\n";
 
-my $irc_ping_interval = $config->{irc_server}{ping_interval} || 60;
-$irc_ping_interval = 10 if $irc_ping_interval < 10;
-
-
-
 #########################################################################
+# handling SlackBot.pm
+
+sub decode_slack_entity{
+	my($msg)=@_;
+	$msg =~ s/&lt;/</g;
+	$msg =~ s/&gt;/>/g;
+	$msg =~ s/&amp;/&/g;
+	return $msg;
+}
+
+sub decode_slack_message{
+	my($src) = @_;
+	console $src;
+	
+	my $after = "";
+	my $start = 0;
+	my $end = length $src;
+	while( $src =~ /<([^>]*)>/g ){
+		my $link = $1;
+		$after .= decode_slack_entity( substr($src,$start,$-[0] - $start) );
+		$start = $+[0];
+		#
+		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
+			$after .= decode_slack_entity( $1.$2 );
+		}elsif( $link =~ /[^\|]*\|(.+)/ ){
+			$after .= decode_slack_entity( $1 );
+		}else{
+			$after .= decode_slack_entity( $link );
+		}
+	}
+	$start < $end and $after .= decode_slack_entity( substr($src,$start,$end -$start ) );
+
+	return $after;
+}
 
 
 my $slack_bot;
 my $slack_last_connection_start = 0;
-my $slack_bot_ready;
 
-my $slack_bot_token = $config->{slack_bot_api_token};
 my $slack_dont_relay_notice= $config->{slack_dont_relay_notice};
+
 my $slack_bot_id = undef; 
 my $slack_channel_id = undef;
 
@@ -67,11 +95,18 @@ my $slack_user_map_update =0;
 my $slack_user_map_interval = $config->{slack_user_list_interval};
 
 sub slack_start{
-	
-	# 既に接続しているなら何もしない
+
 	if( $slack_bot ){
-		# console "Slack: already connected.";
-		return;
+
+		# 既に接続していてpingも途切れていないなら何もしない
+		return if not $slack_bot->is_ping_timeout;
+
+		# ping応答が途切れているようなので、今の接続は閉じる
+		console "Slack: ping timeout.";
+		$slack_bot->dispose;
+		undef $slack_bot;
+
+		# fall thru. そのまま作り直す
 	}
 
 	# 前回接続開始してから60秒以内は何もしない
@@ -81,59 +116,43 @@ sub slack_start{
 		console "Slack: waiting $remain seconds to restart connection.";
 		return;
 	}
-	$slack_last_connection_start = $now;
 
-	$slack_bot_ready = 0;
+	$slack_last_connection_start = $now;
 
 	console "Slack: connection start..";
 
 	$slack_bot = SlackBot->new(
-		token => $slack_bot_token,
+		token => $config->{slack_bot_api_token},
 		ping_interval => 60,
 		user_agent => 'tateisu/perl-irc-slack-relay-bot',
 	);
 
 	$slack_bot->on(
+
 		$SlackBot::EVENT_CATCH_UP => sub {
 			my($rtm, $event_type, @args) = @_;
 			console "Slack: event=$event_type %s",Data::Dump::dump(\@args);
-		}
-	);
+		},
 
-	$slack_bot->on(
+		$SlackBot::EVENT_RTM_CONNECTION_FINISHED => sub {
+			console "Slack: connection finished.";
+			$slack_bot->dispose;
+			undef $slack_bot;
+		},
+
 		$SlackBot::EVENT_ERROR => sub {
 			my($sb,$event_type,$error)=@_;
 			console "Slack: $error";
-			$sb->close;
+			$slack_bot->dispose;
 			undef $slack_bot;
-			undef $slack_bot_ready;
-		}
-	);
+		},
 
-	$slack_bot->on(
-		'finish' => sub {
-			console "Slack: connection finished.";
-			undef $slack_bot;
-			undef $slack_bot_ready;
-		}
-	);
-	$slack_bot->on(
-		'hello' => sub {
-			console "Slack: connection ready.";
-			$slack_bot_ready = 1;
-		}
-	);
-
-
-	$slack_bot->on(
 		$SlackBot::EVENT_SELF => sub {
 			my($rtm, $event_type, $data) = @_;
 			$slack_bot_id = $data->{id};
 			console "Slack: me: id=$data->{id},name=$data->{name}";
-		}
-	);
+		},
 
-	$slack_bot->on(
 		$SlackBot::EVENT_CHANNELS => sub {
 			my($rtm, $event_type, $data) = @_;
 		    for my $channel ( @$data ){
@@ -144,10 +163,8 @@ sub slack_start{
 				}
 			}
 			$slack_channel_id or console "missing Slack channel '$config->{slack_channel_name}'";
-		}
-	);
+		},
 
-	$slack_bot->on(
 		$SlackBot::EVENT_USERS => sub {
 			my($rtm, $event_type, $data) = @_;
 		    for my $member ( @$data ){
@@ -155,35 +172,34 @@ sub slack_start{
 			}
 			console "slack user list size=".scalar(%$slack_user_map);
 			$slack_user_map_update = time;
-		}
-	);
+		},
 
-	$slack_bot->on( $SlackBot::EVENT_TEAM => sub {} );
-	$slack_bot->on( $SlackBot::EVENT_GROUPS => sub {} );
-	$slack_bot->on( $SlackBot::EVENT_MPIMS => sub {} );
-	$slack_bot->on( $SlackBot::EVENT_IMS => sub {} );
-	$slack_bot->on( $SlackBot::EVENT_BOTS => sub {} );
+		$SlackBot::EVENT_TEAM => sub {} ,
+		$SlackBot::EVENT_GROUPS => sub {} ,
+		$SlackBot::EVENT_MPIMS => sub {} ,
+		$SlackBot::EVENT_IMS => sub {} ,
+		$SlackBot::EVENT_BOTS => sub {} ,
 
-	#送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
-	$slack_bot->on( $SlackBot::EVENT_REPLY_TO => sub {} );
+		#送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
+		$SlackBot::EVENT_REPLY_TO => sub {},
 
-	# https://api.slack.com/events/reconnect_url
-	# The reconnect_url event is currently unsupported and experimental.
-	$slack_bot->on( reconnect_url => sub {} );
-	
-	# https://api.slack.com/events/presence_change
-	# このボットはユーザのアクティブ状態に興味がない
-	$slack_bot->on( presence_change => sub {} );
+		hello => sub {
+			console "Slack: connection ready.";
+		},
 
-	# https://api.slack.com/events/user_typing
-	# このボットはユーザの入力中状態に興味がない
-	$slack_bot->on( user_typing => sub {} );
+		# The reconnect_url event is currently unsupported and experimental.
+		reconnect_url => sub {},
 
+		# このボットはユーザのアクティブ状態に興味がない
+		presence_change => sub {},
 
+		# このボットはユーザの入力中状態に興味がない
+		user_typing => sub {},
 
+		# pingへの応答
+		pong => sub {},
 
-	$slack_bot->on(
-		'message' => sub {
+		message => sub {
 			my($rtm, $event_type, $message) = @_;
 			eval{
 				$message->{subtype}='' if not defined $message->{subtype};
@@ -253,44 +269,8 @@ sub slack_start{
 	$slack_bot->start;
 }
 
-
-
-sub decode_slack_message{
-	my($src) = @_;
-	console $src;
-	
-	my $after = "";
-	my $start = 0;
-	my $end = length $src;
-	while( $src =~ /<([^>]*)>/g ){
-		my $link = $1;
-		$after .= decode_slack_entity( substr($src,$start,$-[0] - $start) );
-		$start = $+[0];
-		#
-		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
-			$after .= decode_slack_entity( $1.$2 );
-		}elsif( $link =~ /[^\|]*\|(.+)/ ){
-			$after .= decode_slack_entity( $1 );
-		}else{
-			$after .= decode_slack_entity( $link );
-		}
-	}
-	$start < $end and $after .= decode_slack_entity( substr($src,$start,$end -$start ) );
-
-	return $after;
-}
-
-sub decode_slack_entity{
-	my($msg)=@_;
-	$msg =~ s/&lt;/</g;
-	$msg =~ s/&gt;/>/g;
-	$msg =~ s/&amp;/&/g;
-	return $msg;
-}
-
 my @cue;
 my $cue_oldest_time;
-
 
 # slackのチャンネルにメッセージを送る
 sub relay_to_slack{
@@ -307,8 +287,10 @@ sub relay_to_slack{
 }
 
 sub flush_cue{
-	return if not @cue;
-	return if not $slack_bot or not $slack_bot_ready or not $slack_channel_id;
+
+	return if not $slack_bot or not $slack_bot->is_ready ;
+
+	return if not @cue or not $slack_channel_id;
 
 	my $delta = time - $cue_oldest_time;
 	return if $delta < 15;
@@ -329,12 +311,10 @@ sub flush_cue{
 	$@ and warn $@;
 }
 
-# Slack ユーザ名の一覧を更新
-
 sub update_user_list {
 
 	# SlackBotが準備できていないなら何もしない
-	return if not $slack_bot or not $slack_bot_ready;
+	return if not $slack_bot or not $slack_bot->is_ready;
 
 	# 前回更新してから一定時間が経過するまで何もしない
 	my $now = time;
@@ -349,8 +329,6 @@ sub update_user_list {
 		console "Slack user list update failed: $error";
 	});
 }
-
-
 
 ###########################################################
 # IRC接続の管理
@@ -373,6 +351,9 @@ sub fix_channel_name($$){
 
 my $relay_irc_bot ;
 my $relay_irc_channel;
+
+my $irc_ping_interval = $config->{irc_server}{ping_interval} || 60;
+$irc_ping_interval = 10 if $irc_ping_interval < 10;
 
 sub on_motd;
 sub on_message;

@@ -11,29 +11,6 @@ use AnyEvent;
 use AnyEvent::WebSocket::Client 0.12;
 use AnyEvent::HTTP;
 
-# 非同期処理でエラーがあった場合に発生するイベント。引数はエラーメッセージ
-our $EVENT_ERROR : Constant( '<>error');
-
-# ハンドラが登録されていないイベントのキャッチアップ
-our $EVENT_CATCH_UP : Constant( '<>catch_up');
-
-# 送信したメッセージに対するタイムスタンプが確定したら呼ばれる。引数はJSONオブジェクト
-our $EVENT_REPLY_TO : Constant( '<>reply_to');
-
-# typeのない未知のメッセージを受け取った
-our $EVENT_UNKNOWN_MESSAGE : Constant( '<>unknown_message');
-
-# rmt.startのレスポンスや各種Web APIのレスポンスが通知される
-our $EVENT_SELF : Constant( '<>self');
-our $EVENT_TEAM : Constant( '<>team');
-our $EVENT_USERS : Constant( '<>users');
-our $EVENT_CHANNELS : Constant( '<>channels');
-our $EVENT_GROUPS : Constant( '<>groups');
-our $EVENT_MPIMS : Constant( '<>mpims');
-our $EVENT_IMS : Constant( '<>ims');
-our $EVENT_BOTS : Constant( '<>bots' );
-
-
 my $URL_RTM_START = 'https://slack.com/api/rtm.start';
 my $URL_CHANNEL_LIST = "https://slack.com/api/channels.list";
 my $URL_USER_LIST = "https://slack.com/api/users.list";
@@ -46,12 +23,108 @@ sub new {
 		registry => {},
 		ping_interval => 60,
 		metadata => {},
-		last_event_received =>0,
+		last_event_received => time,
 		user_agent => "SlackBot.pm",
 		@_,
 	#	token	 => $token,
 	}, $class;
 }
+
+sub dispose{
+	my $self = shift;
+	$self->{is_disposed} = 1;
+	$self->{registry} = {};
+	$self->close;
+}
+
+sub quiet {
+	my $self = shift;
+
+	@_ and $self->{quiet} = shift;
+
+	$self->{quiet} // '';
+}
+
+sub user_agent{
+	my $self = shift;
+
+	@_ and $self->{user_agent} = $_[0] // "SlackBot.pm";
+
+	$self->{user_agent};
+}
+
+sub metadata { shift->{metadata} // {} }
+
+#########################################################################
+# イベントリスナーの管理
+
+# ハンドラが登録されていないイベントのキャッチアップ。引数は実際のイベントタイプによって異なる
+our $EVENT_CATCH_UP : Constant( '<>catch_up');
+
+# 非同期処理でエラーがあった場合に発生するイベント。引数はエラーメッセージ
+our $EVENT_ERROR : Constant( '<>error');
+
+# 送信したメッセージに対するタイムスタンプが確定したら呼ばれる。引数はレスポンスのJSONオブジェクト
+our $EVENT_REPLY_TO : Constant( '<>reply_to');
+
+# typeのない未知のメッセージを受け取った。引数はレスポンスのJSONオブジェクト
+our $EVENT_UNKNOWN_MESSAGE : Constant( '<>unknown_message');
+
+# RTM API のWebSocket 接続が閉じられた
+our $EVENT_RTM_CONNECTION_FINISHED : Constant( '<>finish');
+
+
+# rmt.startのレスポンスや各種Web APIのレスポンスが通知される。引数はデータのJSON配列。レスポンス全体ではない
+our $EVENT_SELF : Constant( '<>self');
+our $EVENT_TEAM : Constant( '<>team');
+our $EVENT_USERS : Constant( '<>users');
+our $EVENT_CHANNELS : Constant( '<>channels');
+our $EVENT_GROUPS : Constant( '<>groups');
+our $EVENT_MPIMS : Constant( '<>mpims');
+our $EVENT_IMS : Constant( '<>ims');
+our $EVENT_BOTS : Constant( '<>bots' );
+
+# ほか、https://api.slack.com/events に説明されているイベントタイプを指定できる。
+# 引数はレスポンスのJSONオブジェクト
+
+# イベントハンドラの登録
+sub on {
+	my $self = shift;
+	my $size = 0+@_;
+	for( my $i=0 ; $i<$size-1 ; $i+=2 ){
+		my $type = $_[$i];
+		my $cb = $_[$i+1];
+		$self->{registry}{$type} = $cb;
+	}
+}
+
+# イベントハンドラの除去
+sub off {
+	my $self = shift;
+	for(@_){
+		delete $self->{registry}{$_};
+	}
+}
+
+# イベント発火
+sub _fire {
+	my ($self, $type, @args) = @_;
+	my $cb = $self->{registry}{$type};
+	$cb or $cb = $self->{registry}{$EVENT_CATCH_UP};
+	$cb and $cb->($self, $type, @args);
+}
+
+# Web APIで取得したデータのイベント発火
+sub _update_info{
+	my($self,$key,$data,$event_name)=@_;
+	return if not defined $data;
+
+	$self->{metadata}{$key} = $data;
+	$self->_fire( $event_name ,$data );
+}
+
+#########################################################################
+# WebSocket を使った RTM 接続
 
 sub is_active{
 	my $self = shift;
@@ -63,24 +136,22 @@ sub is_ready{
 	return $self->{conn} and $self->{said_hello};
 }
 
-sub close {
-	my ($self)=@_;
-	eval{
-		$self->{conn}->close
-	};
+sub is_ping_timeout {
+	my $self = shift;
+	return $self->{conn} and time - $self->{last_event_received} > $self->{ping_interval} * 3;
 }
 
-sub user_agent{
-	my $self = shift;
-
-	@_ and $self->{user_agent} = $_[0] // "SlackBot.pm";
-
-	$self->{user_agent};
+sub close {
+	my ($self)=@_;
+	eval{ $self->{conn}->close };
+	undef $self->{conn};
+	undef $self->{pinger};
 }
 
 sub start {
 	my($self) = @_;
 
+	$self->{last_event_received} = time;
 	$self->{busy_rtm_start} = 1;
 	$self->{busy_wss_connect} = 0;
 	$self->{said_hello} = 0;
@@ -92,7 +163,10 @@ sub start {
 	, sub {
 		my($data,$headers)=@_;
 
+		$self->{is_disposed} and return;
+
 		$self->{busy_rtm_start} = 0;
+		$self->{last_event_received} = time;
 
 		(defined $data and length $data)
 		or return $self->_fire( $EVENT_ERROR, "HTTP error. $headers->{Status} $headers->{Reason}");
@@ -117,12 +191,17 @@ sub start {
 		eval{
 			$self->{busy_wss_connect} = 1;
 			$self->{client}->connect($json->{url})->cb(sub {
+
+				$self->{last_event_received} = time;
 				$self->{busy_wss_connect} = 0;
 
 				my $conn = $self->{conn} = eval{ shift->recv };
 				$@ and return $self->_fire( $EVENT_ERROR, "WebSocket error. $@");
 
+				$self->{is_disposed} and return $conn->close;
+
 				$self->{message_id_seed} = 1; # 送信メッセージのIDはコネクションごとにユニーク
+
 
 				$self->{pinger} = AnyEvent->timer(
 					after	 => 60,
@@ -133,16 +212,20 @@ sub start {
 				$conn->on(finish => sub { 
 					my( $conn ) = @_;
 
+					$self->{last_event_received} = time;
+
 					# Cancel the pinger
 					undef $self->{pinger};
 					undef $self->{conn};
 
-					$self->_fire('finish');
+					$self->_fire($EVENT_RTM_CONNECTION_FINISHED);
 				});
 
 				$conn->on(each_message => sub {
 					my ($conn, $raw) = @_;
-					
+
+					$self->{is_disposed} and return $conn->close;
+
 					$self->{last_event_received} = time;
 
 					my $json = eval{ decode_json($raw->body) };
@@ -169,51 +252,16 @@ sub start {
 	};
 }
 
-
-sub metadata { shift->{metadata} // {} }
-
-sub quiet {
-	my $self = shift;
-	if (@_) {
-		$self->{quiet} = shift;
-	}
-	return $self->{quiet} // '';
-}
-
-sub on {
-	my ($self, $type, $cb) = @_;
-	$self->{registry}{$type} = $cb;
-}
-
-
-sub off {
-	my ($self, $type) = @_;
-	delete $self->{registry}{$type};
-}
-
-sub _fire {
-	my ($self, $type, @args) = @_;
-	my $cb = $self->{registry}{$type};
-	$cb or $cb = $self->{registry}{$EVENT_CATCH_UP};
-	$cb and $cb->($self, $type, @args);
-}
-
-sub _update_info{
-	my($self,$key,$data,$event_name)=@_;
-	return if not defined $data;
-
-	$self->{metadata}{$key} = $data;
-	$self->_fire( $event_name ,$data );
-}
-
 sub send {
 	my ($self, $msg) = @_;
 	my $msg_id;
 	eval{
+		$self->{is_disposed} and return;
+
 		if( not $self->{conn} ){
-			warn "Cannot send because the Slack connection is not started.";
+			warn "Cannot send message. missing RTM connection.";
 		}elsif( not $self->{said_hello} ){
-			warn "Cannot send because Slack has not yet said hello.";
+			warn "Cannot send message. because Slack has not yet said hello.";
 		}else{
 			$msg_id = $msg->{id} = $self->{message_id_seed}++;
 			my $json = encode_json($msg);
@@ -231,12 +279,19 @@ sub ping {
 }
 
 #######################################################
+
+# Web API の非同期呼び出し
+# 呼び出し結果はRTMイベントと同じコールバックで帰る。エラーコールバックは別途指定する
 sub _call_list_api{
 	my($self,$url,$key,$key2,$event_type,$cb_error)=@_;
 
 	$cb_error //= sub{ };
 
-	http_get "$url?token=$self->{token}", sub {
+	http_get "$url?token=$self->{token}"
+	, headers => {
+		'User-Agent',$self->{user_agent}
+	}
+	, sub {
 		my($data,$headers)=@_;
 		
 		$data or return $cb_error->("HTTP error. $headers->{Status}, #headers->{Reason}");
@@ -261,3 +316,181 @@ sub get_channel_list{
 	$self->_call_list_api($URL_CHANNEL_LIST,'channels','channels',$EVENT_USERS,$cb_error);
 }
 
+#######################################################
+1;
+__END__
+
+=pod
+
+=encoding UTF-8
+
+=head1 NAME
+
+SlackBot.pm - AnyEvent module for interacting with the Slack RTM API.
+
+=head1 DESCRIPTION
+
+This provides an L<AnyEvent>-based interface to the L<Slack Real-Time Messaging API|https://api.slack.com/rtm>.
+This allows a program to interactively send and receive messages of a WebSocket connection.
+
+This module is similar to AnyEvent::SlackRTM, but more suitable for real-world bot.
+- completely non-blocking. using AnyEvent::HTTP to calling Web API (includes rtm.start). this is important to coexist with other AnyEvent module, such as IRC.
+- some internal event for error handling. this module does not unexpectly die in asynchronous callback.
+- event for catch-up all unregistred events.
+- some function to call Web API in asynchronously. some event to notify its response.
+- function to check incoming message timeout (almost same as ping timeout).
+
+=head1 SYNOPSIS
+
+sub slack_start{
+
+	if( $slack_bot ){
+		return if not $slack_bot->is_ping_timeout;
+		console "Slack: ping timeout.";
+		$slack_bot->dispose;
+		undef $slack_bot;
+	}
+
+	my $now = time;
+	my $remain = $slack_last_connection_start + 60 -$now;
+	if( $remain > 0 ){
+		console "Slack: waiting $remain seconds to restart connection.";
+		return;
+	}
+	$slack_last_connection_start = $now;
+
+	console "Slack: connection start..";
+
+	$slack_bot = SlackBot->new(
+		token => $config->{slack_bot_api_token},
+		user_agent => $config->{slack_user_agent},
+		ping_interval => 60,
+	);
+
+	$slack_bot->on(
+
+		$SlackBot::EVENT_CATCH_UP => sub {
+			my($rtm, $event_type, @args) = @_;
+			console "Slack: event=$event_type %s",Data::Dump::dump(\@args);
+		},
+
+		$SlackBot::EVENT_RTM_CONNECTION_FINISHED => sub {
+			console "Slack: connection finished.";
+			$slack_bot->dispose;
+			undef $slack_bot;
+		},
+
+		$SlackBot::EVENT_ERROR => sub {
+			my($sb,$event_type,$error)=@_;
+			console "Slack: $error";
+			$slack_bot->dispose;
+			undef $slack_bot;
+		},
+
+		$SlackBot::EVENT_SELF => sub {
+			my($rtm, $event_type, $data) = @_;
+			$slack_bot_id = $data->{id};
+			console "Slack: me: id=$data->{id},name=$data->{name}";
+		},
+
+		$SlackBot::EVENT_CHANNELS => sub {
+			my($rtm, $event_type, $data) = @_;
+		    for my $channel ( @$data ){
+				if( "\#$channel->{name}" eq $config->{slack_channel_name} ){
+					$slack_channel_id = $channel->{id};
+					console "Slack Channel: $channel->{id},\#$channel->{name}";
+					last;
+				}
+			}
+			$slack_channel_id or console "missing Slack channel '$config->{slack_channel_name}'";
+		},
+
+		$SlackBot::EVENT_USERS => sub {
+			my($rtm, $event_type, $data) = @_;
+		    for my $member ( @$data ){
+				$slack_user_map->{ $member->{id} } = $member;
+			}
+			console "slack user list size=".scalar(%$slack_user_map);
+			$slack_user_map_update = time;
+		},
+
+		$SlackBot::EVENT_TEAM => sub {} ,
+		$SlackBot::EVENT_GROUPS => sub {} ,
+		$SlackBot::EVENT_MPIMS => sub {} ,
+		$SlackBot::EVENT_IMS => sub {} ,
+		$SlackBot::EVENT_BOTS => sub {} ,
+		$SlackBot::EVENT_REPLY_TO => sub {},
+
+		hello => sub {
+			console "Slack: connection ready.";
+		},
+
+		reconnect_url => sub {},
+		presence_change => sub {},
+		user_typing => sub {},
+		pong => sub {},
+
+		message => sub {
+			my($rtm, $event_type, $message) = @_;
+			eval{
+				$message->{subtype}='' if not defined $message->{subtype};
+				if( $message->{subtype} eq 'message_changed'){
+					my $old_channel = $message->{channel};
+					$message = $message->{message};
+					$message->{channel} = $old_channel if not $message->{channel};
+					$message->{subtype}='' if not defined $message->{subtype};
+				}
+
+				if( not $message->{user} ){
+					console "missing user? %s",Data::Dump::dump($message);
+					$message->{user}='?';
+				}
+
+				return if defined $slack_bot_id and $slack_bot_id eq $message->{user};
+
+				my $member;
+				if( $message->{user_profile} ){
+					$member = $slack_user_map->{ $message->{user} } = $message->{user_profile};
+				}else{
+					$member = $slack_user_map->{ $message->{user} };
+				}
+				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
+				
+
+				if( defined $message->{channel} 
+				and defined $slack_channel_id
+				and $message->{channel} ne $slack_channel_id 
+				){
+					console "destination not matcn. %s",Data::Dump::dump($message);
+					return;
+				}
+
+				if( $message->{subtype} eq "channel_join" ){
+					#
+				}elsif( $message->{subtype} eq "channel_leave" ){
+					#
+				}else{
+					console "unknown subtype? %s",Data::Dump::dump($message) if $message->{subtype};
+				}
+				
+				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
+				my $msg = $message->{text};
+				if( defined $message->{message} and not defined $msg ){
+					$msg = $message->{message}{text};
+				}
+				if( defined $msg ){
+					my @lines = split /[\x0d\x0a]+/,decode_slack_message($msg);
+					for my $line (@lines){
+						next if not dnl $line;
+						relay_to_irc( "<$from> $line");
+					}
+				}
+			};
+			$@ and console $@;
+		}
+	);
+	$slack_bot->start;
+}
+
+
+=cut
