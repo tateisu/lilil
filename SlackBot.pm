@@ -138,7 +138,12 @@ sub is_ready{
 
 sub is_ping_timeout {
 	my $self = shift;
-	return $self->{conn} and time - $self->{last_event_received} > $self->{ping_interval} * 3;
+	my $delta = time - $self->{last_event_received};
+	if( $self->{conn} and $delta > $self->{ping_interval} * 3 ){
+		warn "is_ping_timeiut: last=$self->{last_event_received}, ping_interval=$self->{ping_interval}, delta=$delta\n";
+		return 1;
+	}
+	return 0;
 }
 
 sub close {

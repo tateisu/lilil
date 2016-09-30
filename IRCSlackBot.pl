@@ -48,6 +48,14 @@ $@ and die "$config_file : $@\n";
 #########################################################################
 # handling SlackBot.pm
 
+sub encode_slack_entity{
+	my $msg = shift;
+	$msg =~ s/&/&amp;/g;
+	$msg =~ s/</&lt;/g;
+	$msg =~ s/>/&gt;/g;
+	$msg;
+}
+
 sub decode_slack_entity{
 	my($msg)=@_;
 	$msg =~ s/&lt;/</g;
@@ -88,6 +96,7 @@ my $slack_last_connection_start = 0;
 my $slack_dont_relay_notice= $config->{slack_dont_relay_notice};
 
 my $slack_bot_id = undef; 
+my $slack_bot_name = undef; 
 my $slack_channel_id = undef;
 
 my $slack_user_map ={};
@@ -142,7 +151,7 @@ sub slack_start{
 
 		$SlackBot::EVENT_ERROR => sub {
 			my($sb,$event_type,$error)=@_;
-			console "Slack: $error";
+			console "Slack: error. $error";
 			$slack_bot->dispose;
 			undef $slack_bot;
 		},
@@ -150,6 +159,7 @@ sub slack_start{
 		$SlackBot::EVENT_SELF => sub {
 			my($rtm, $event_type, $data) = @_;
 			$slack_bot_id = $data->{id};
+			$slack_bot_name = $data->{name};
 			console "Slack: me: id=$data->{id},name=$data->{name}";
 		},
 
@@ -229,6 +239,25 @@ sub slack_start{
 				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
 				
 
+				my $msg = $message->{text};
+				if( defined $message->{message} and not defined $msg ){
+					$msg = $message->{message}{text};
+				}
+				
+				#warn "$message->{subtype},$slack_bot_name,$msg";
+				
+				if( not $message->{subtype}
+				and $slack_bot_name
+				and $msg =~ /\A\s*$slack_bot_name&gt;ping\s*\z/i
+				){
+					$rtm->send({
+						type => 'message'
+						,channel => $message->{channel}
+						,text => encode_slack_entity("$from>pong")
+					});
+					return;
+				}
+
 				# メッセージの宛先が定義されていて、しかし目的のチャンネルでないなら無視する
 				if( defined $message->{channel} 
 				and defined $slack_channel_id
@@ -248,11 +277,6 @@ sub slack_start{
 				
 					my $from =  (not defined $member ) ? $message->{user} : $member->{name};
 
-					my $msg = $message->{text};
-					if( defined $message->{message} and not defined $msg ){
-						$msg = $message->{message}{text};
-					}
-					
 					if( dnl $msg ){
 						my @lines = split /[\x0d\x0a]+/,decode_slack_message($msg);
 						for my $line (@lines){
@@ -262,7 +286,7 @@ sub slack_start{
 					}
 				}
 			};
-			$@ and console $@;
+			$@ and console "message handling failed. $@";
 		}
 	);
 
@@ -277,12 +301,8 @@ sub relay_to_slack{
 	my($msg)=@_;
 	# $msg はUTF8フラグつきの文字列
 	eval{
-		$msg =~ s/&/&amp;/g;
-		$msg =~ s/</&lt;/g;
-		$msg =~ s/>/&gt;/g;
-
 		$cue_oldest_time = time if not @cue;
-		push @cue,$msg;
+		push @cue,encode_slack_entity($msg);
 	}
 }
 
@@ -617,7 +637,7 @@ sub relay_to_irc{
 			$relay_irc_bot->{irc}->send_msg( NOTICE => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
 		}
 	};
-	$@ and console $@;
+	$@ and console "relay_to_irc: $@";
 }
 
 ################################################################################
