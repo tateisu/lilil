@@ -126,6 +126,16 @@ sub _update_info{
 #########################################################################
 # WebSocket ‚ðŽg‚Á‚½ RTM Ú‘±
 
+sub status{
+	my $self = shift;
+	return "calling rtm.start" if $self->{busy_rtm_start};
+	return "connecting WebSocket" if $self->{busy_wss_connect};
+	return "not connected" if not $self->{conn};
+	return "waiting hello" if not $self->{said_hello};
+	my @lt = localtime;
+	return sprintf("connected. last_rx=%d:%02d:%02d",reverse @lt[0..2]);
+}
+
 sub is_active{
 	my $self = shift;
 	return $self->{busy_rtm_start} or $self->{busy_wss_connect} or $self->{conn};
@@ -320,6 +330,49 @@ sub get_channel_list{
 	my($self,$cb_error)=@_;
 	$self->_call_list_api($URL_CHANNEL_LIST,'channels','channels',$EVENT_USERS,$cb_error);
 }
+
+#######################################################
+
+sub encode_entity{
+	my $msg = shift;
+	$msg =~ s/&/&amp;/g;
+	$msg =~ s/</&lt;/g;
+	$msg =~ s/>/&gt;/g;
+	$msg;
+}
+
+sub decode_entity{
+	my($msg)=@_;
+	$msg =~ s/&lt;/</g;
+	$msg =~ s/&gt;/>/g;
+	$msg =~ s/&amp;/&/g;
+	return $msg;
+}
+
+sub decode_message{
+	my($src) = @_;
+	
+	my $after = "";
+	my $start = 0;
+	my $end = length $src;
+	while( $src =~ /<([^>]*)>/g ){
+		my $link = $1;
+		$after .= decode_entity( substr($src,$start,$-[0] - $start) );
+		$start = $+[0];
+		#
+		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
+			$after .= decode_entity( $1.$2 );
+		}elsif( $link =~ /[^\|]*\|(.+)/ ){
+			$after .= decode_entity( $1 );
+		}else{
+			$after .= decode_entity( $link );
+		}
+	}
+	$start < $end and $after .= decode_entity( substr($src,$start,$end -$start ) );
+
+	return $after;
+}
+
 
 #######################################################
 1;

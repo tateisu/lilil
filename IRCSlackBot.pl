@@ -17,7 +17,6 @@ use AnyEvent::HTTP;
 use JIS4IRC;
 use SlackBot;
 
-   
 binmode STDOUT, ":utf8";
 binmode STDERR, ":utf8";
 
@@ -26,7 +25,6 @@ my $utf8 = Encode::find_encoding("utf8");
 
 my $debug = 0;
 
-our $TAG = '$$TAG$$';
 sub console($;$$$$$$$$$$$$$$$$){
 	my @lt = localtime;
 	$lt[5]+=1900;
@@ -48,60 +46,21 @@ $@ and die "$config_file : $@\n";
 #########################################################################
 # handling SlackBot.pm
 
-sub encode_slack_entity{
-	my $msg = shift;
-	$msg =~ s/&/&amp;/g;
-	$msg =~ s/</&lt;/g;
-	$msg =~ s/>/&gt;/g;
-	$msg;
-}
-
-sub decode_slack_entity{
-	my($msg)=@_;
-	$msg =~ s/&lt;/</g;
-	$msg =~ s/&gt;/>/g;
-	$msg =~ s/&amp;/&/g;
-	return $msg;
-}
-
-sub decode_slack_message{
-	my($src) = @_;
-	console $src;
-	
-	my $after = "";
-	my $start = 0;
-	my $end = length $src;
-	while( $src =~ /<([^>]*)>/g ){
-		my $link = $1;
-		$after .= decode_slack_entity( substr($src,$start,$-[0] - $start) );
-		$start = $+[0];
-		#
-		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
-			$after .= decode_slack_entity( $1.$2 );
-		}elsif( $link =~ /[^\|]*\|(.+)/ ){
-			$after .= decode_slack_entity( $1 );
-		}else{
-			$after .= decode_slack_entity( $link );
-		}
-	}
-	$start < $end and $after .= decode_slack_entity( substr($src,$start,$end -$start ) );
-
-	return $after;
-}
-
-
 my $slack_bot;
-my $slack_last_connection_start = 0;
-
-my $slack_dont_relay_notice= $config->{slack_dont_relay_notice};
+my $slack_last_connection_start = 0; # 最後に接続を開始した時刻
 
 my $slack_bot_id = undef; 
 my $slack_bot_name = undef; 
 my $slack_channel_id = undef;
 
 my $slack_user_map ={};
-my $slack_user_map_update =0;
-my $slack_user_map_interval = $config->{slack_user_list_interval};
+my $slack_user_map_update =0; # 最後にuser.listを更新開始/完了した時刻
+
+sub slack_user_update;
+
+sub slack_status{
+	return $slack_bot ? $slack_bot->status : "not connected";
+}
 
 sub slack_start{
 
@@ -121,18 +80,14 @@ sub slack_start{
 	# 前回接続開始してから60秒以内は何もしない
 	my $now = time;
 	my $remain = $slack_last_connection_start + 60 -$now;
-	if( $remain > 0 ){
-		console "Slack: waiting $remain seconds to restart connection.";
-		return;
-	}
-
+	$remain > 0 and return console "Slack: waiting %d seconds to restart connection.",$remain;
 	$slack_last_connection_start = $now;
 
 	console "Slack: connection start..";
 
 	$slack_bot = SlackBot->new(
 		token => $config->{slack_bot_api_token},
-		ping_interval => 60,
+		ping_interval => ($config->{slack_ping_interval}//60),
 		user_agent => 'tateisu/perl-irc-slack-relay-bot',
 	);
 
@@ -140,7 +95,7 @@ sub slack_start{
 
 		$SlackBot::EVENT_CATCH_UP => sub {
 			my($rtm, $event_type, @args) = @_;
-			console "Slack: event=$event_type %s",Data::Dump::dump(\@args);
+			console "Slack: catch up event. $event_type %s",Data::Dump::dump(\@args);
 		},
 
 		$SlackBot::EVENT_RTM_CONNECTION_FINISHED => sub {
@@ -157,10 +112,9 @@ sub slack_start{
 		},
 
 		$SlackBot::EVENT_SELF => sub {
-			my($rtm, $event_type, $data) = @_;
-			$slack_bot_id = $data->{id};
-			$slack_bot_name = $data->{name};
-			console "Slack: me: id=$data->{id},name=$data->{name}";
+			my($rtm, $event_type, $user) = @_;
+			$slack_bot_id = $user->{id} if $user->{id};
+			slack_user_update( $user );
 		},
 
 		$SlackBot::EVENT_CHANNELS => sub {
@@ -168,20 +122,30 @@ sub slack_start{
 		    for my $channel ( @$data ){
 				if( "\#$channel->{name}" eq $config->{slack_channel_name} ){
 					$slack_channel_id = $channel->{id};
-					console "Slack Channel: $channel->{id},\#$channel->{name}";
+					console "Slack: channel: $channel->{id},\#$channel->{name}";
 					last;
 				}
 			}
-			$slack_channel_id or console "missing Slack channel '$config->{slack_channel_name}'";
+			$slack_channel_id or console "Slack: missing channel data for '$config->{slack_channel_name}'";
 		},
 
 		$SlackBot::EVENT_USERS => sub {
 			my($rtm, $event_type, $data) = @_;
-		    for my $member ( @$data ){
-				$slack_user_map->{ $member->{id} } = $member;
+
+		    for my $user ( @$data ){
+				slack_user_update( $user );
 			}
-			console "slack user list size=".scalar(%$slack_user_map);
+
+			console "Slack: user list: size=".scalar(%$slack_user_map);
 			$slack_user_map_update = time;
+		},
+
+		user_change => sub {
+			my($rtm, $event_type, $data) = @_;
+
+			my $user = $data->{user};
+			console "Slack: user_change: $user->{id},$user->{name}";
+			slack_user_update( $user );
 		},
 
 		$SlackBot::EVENT_TEAM => sub {} ,
@@ -209,6 +173,7 @@ sub slack_start{
 		# pingへの応答
 		pong => sub {},
 
+
 		message => sub {
 			my($rtm, $event_type, $message) = @_;
 			eval{
@@ -221,7 +186,7 @@ sub slack_start{
 				}
 
 				if( not $message->{user} ){
-					console "missing user? %s",Data::Dump::dump($message);
+					console "Slack: missing user? %s",Data::Dump::dump($message);
 					$message->{user}='?';
 				}
 
@@ -237,15 +202,16 @@ sub slack_start{
 					$member = $slack_user_map->{ $message->{user} };
 				}
 				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
-				
 
+				# メッセージ本文
 				my $msg = $message->{text};
 				if( defined $message->{message} and not defined $msg ){
 					$msg = $message->{message}{text};
 				}
-				
+
 				#warn "$message->{subtype},$slack_bot_name,$msg";
 				
+				# pingコマンド
 				if( not $message->{subtype}
 				and $slack_bot_name
 				and $msg =~ /\A\s*$slack_bot_name&gt;ping\s*\z/i
@@ -253,7 +219,7 @@ sub slack_start{
 					$rtm->send({
 						type => 'message'
 						,channel => $message->{channel}
-						,text => encode_slack_entity("$from>pong")
+						,text => SlackBot::encode_entity( sprintf "%s>pong. irc[%s],slack[%s]",$from,irc_status(),slack_status() )
 					});
 					return;
 				}
@@ -263,7 +229,7 @@ sub slack_start{
 				and defined $slack_channel_id
 				and $message->{channel} ne $slack_channel_id 
 				){
-					console "destination not matcn. %s",Data::Dump::dump($message);
+					console "Slack: message destination not matcn. %s",Data::Dump::dump($message);
 					return;
 				}
 
@@ -273,12 +239,10 @@ sub slack_start{
 				}elsif( $message->{subtype} eq "channel_leave" ){
 					relay_to_irc( "${from} さんが退出しました");
 				}else{
-					console "missing subtype? %s",Data::Dump::dump($message) if $message->{subtype};
-				
-					my $from =  (not defined $member ) ? $message->{user} : $member->{name};
+					console "Slack: missing subtype? %s",Data::Dump::dump($message) if $message->{subtype};
 
 					if( dnl $msg ){
-						my @lines = split /[\x0d\x0a]+/,decode_slack_message($msg);
+						my @lines = split /[\x0d\x0a]+/,SlackBot::decode_message($msg);
 						for my $line (@lines){
 							next if not dnl $line;
 							relay_to_irc( "<$from> $line");
@@ -286,7 +250,7 @@ sub slack_start{
 					}
 				}
 			};
-			$@ and console "message handling failed. $@";
+			$@ and console "Slack: message handling failed. $@";
 		}
 	);
 
@@ -302,7 +266,7 @@ sub relay_to_slack{
 	# $msg はUTF8フラグつきの文字列
 	eval{
 		$cue_oldest_time = time if not @cue;
-		push @cue,encode_slack_entity($msg);
+		push @cue,SlackBot::encode_entity($msg);
 	}
 }
 
@@ -338,17 +302,33 @@ sub update_user_list {
 
 	# 前回更新してから一定時間が経過するまで何もしない
 	my $now = time;
-	return if $now - $slack_user_map_update < $slack_user_map_interval;
-
+	return if $now - $slack_user_map_update < $config->{slack_user_list_interval};
 	$slack_user_map_update = $now;
-	
+
 	# 更新を開始(非同期API)
 	console "get slack user list..";
 	$slack_bot->get_user_list(sub{
 		my $error = shift;
-		console "Slack user list update failed: $error";
+		console "Slack: user list update failed: $error";
 	});
 }
+
+sub slack_user_update{
+	my($user)=@_;
+
+	# ignore incomplete user information
+	return if not $user->{id};
+	
+	my $user_old = $slack_user_map->{ $user->{id} };
+
+	$slack_user_map->{ $user->{id} } = $user;
+
+	if( $slack_bot_id and $slack_bot_id eq $user->{id} ){
+		$slack_bot_name = $user->{name} if $user->{name};
+		console "Slack: me: id=$user->{id},name=$user->{name}";
+	}
+}
+
 
 ###########################################################
 # IRC接続の管理
@@ -374,6 +354,8 @@ my $relay_irc_channel;
 
 my $irc_ping_interval = $config->{irc_server}{ping_interval} || 60;
 $irc_ping_interval = 10 if $irc_ping_interval < 10;
+
+my $irc_last_recv = time;
 
 sub on_motd;
 sub on_message;
@@ -403,18 +385,19 @@ sub on_message;
 
 	my $con = $bot->{irc} = new AnyEvent::IRC::Connection;
 	$con->heap->{bot} = $bot;
-
 	$con->reg_cb (
 
 		#接続終了
 		disconnect => sub {
 			my ($con,$reason) = @_;
+			$irc_last_recv = time;
 			console "%s: disconnected. reason=$reason";
 		},
 
 		# 接続できた
 		connect=> sub{
 			my ($con,$error) = @_;
+			$irc_last_recv = time;
 			my $bot = $con->heap->{bot};
 			if( $error ){
 				console "%s: connection failed. error=$error",$bot->{Name};
@@ -423,6 +406,11 @@ sub on_message;
 				$con->send_msg (NICK => $bot->{ServerSpec}{Nick});
 				$con->send_msg (USER => $bot->{ServerSpec}{Username}, '*', '0',$bot->{encode}($bot->{ServerSpec}{Ircname}));
 			}
+		},
+
+		'irc_*' => sub {
+			my($con,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			$irc_last_recv = time;
 		},
 
 		# 認証完了
@@ -546,17 +534,32 @@ sub on_message {
 	my $channel = fix_channel_name($bot->{decode}($channel_raw),1);
 
 	my $msg = $bot->{decode}( $args->{params}[-1]);
-	
+
 	console "%s %s %s %s",$command,$from,$channel,$msg;
+
+	##############################
+
+	$bot->{user_prefix} =~ /^([^!]+)/;
+	my $my_nick = $1;
+
+	$from =~ /^([^!]+)/;
+	my $from_nick = $1;
+
+	# pingコマンド
+	if( $my_nick and $msg =~ /\A\s*$my_nick>ping\s*\z/i ){
+		$relay_irc_bot->{irc}->send_msg( NOTICE => $channel_raw ,$relay_irc_bot->{encode}( sprintf "%s>pong. irc[%s],slack[%s]",$from_nick,irc_status(),slack_status() ) );
+		return;
+	}
 	
+	##################################
+
 	if( not grep {$_ eq $channel} keys %{ $bot->{JoinChannelFixed} } ){
 		console "指定チャンネル宛てではないので無視します";
 		return;
 	}
-	
-	
+
 	my $is_notice = ($command =~ /notice/i);
-	if( $is_notice and $slack_dont_relay_notice ){
+	if( $is_notice and $config->{slack_dont_relay_notice} ){
 		console "NOTICEをリレーしない設定なので無視します";
 		return;
 	}
@@ -566,8 +569,6 @@ sub on_message {
 		$is_action = 1;
 	}
 
-	$bot->{user_prefix} =~ /^([^!]+)/;
-	my $my_nick = $1;
 
 	if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>exit\s*\z/ ){
 		console "%s %s: exit required by (%s),said (%s)",$bot->{Name},fix_channel_name($bot->{decode}($channel),1),$from,$msg;
@@ -590,22 +591,41 @@ sub on_message {
 	}
 }
 
-sub bot_connect($){
-	my($bot)=@_;
-	if( $bot->{irc}->is_connected ){
-		# console "%s: already connected. ",$bot->{Name};
-		return;
-	}else{
-		my $now = time;
-		if( $now - $bot->{last_connection_start} >= 60 ){
-			$bot->{last_connection_start} = $now;
-			console "%s: connection start. %s:%s",$bot->{Name}, $bot->{ServerSpec}{Server},$bot->{ServerSpec}{Port};
-			$bot->{irc}->connect( $bot->{ServerSpec}{Server},$bot->{ServerSpec}{Port});
-		}
-	}
+sub irc_status{
+	my $bot = $config->{irc_server};
+	return "not connected" if not $bot->{irc}->is_connected;
+	return "not authorized" if not $bot->{server_prefix};
+	my @lt = localtime;
+	return sprintf("connected. last_rx=%d:%02d:%02d",reverse @lt[0..2]);
 }
 
-sub bot_ping($){
+sub irc_start($){
+	my($bot)=@_;
+
+	my $now = time;
+	if( $bot->{irc}->is_connected ){
+		my $delta = $now - $irc_last_recv;
+		if( $delta > $irc_ping_interval * 3 ){
+			console "%s: ping timeout.",$bot->{Name};
+			$bot->{irc}->disconnect;
+			$irc_last_recv = time;
+		}else{
+			# 既に接続しているし、pingも途切れていない
+			return;
+		}
+	}
+	
+	# 前回接続開始して一定時間以内は何もしない
+	my $remain = $bot->{last_connection_start} + 60 -$now;
+	$remain > 0 and return console "%s: waiting %d seconds to restart connection.",$bot->{Name},$remain;
+	$bot->{last_connection_start} = $now;
+
+	undef $bot->{server_prefix};
+	$bot->{irc}->connect( $bot->{ServerSpec}{Server},$bot->{ServerSpec}{Port});
+	console "%s: connection start. %s:%s",$bot->{Name}, $bot->{ServerSpec}{Server},$bot->{ServerSpec}{Port};
+}
+
+sub irc_ping($){
 	my($bot)=@_;
 
 	if( $bot->{irc}->is_connected && $bot->{server_prefix} ){
@@ -623,21 +643,22 @@ my @duplicate_check;
 # $msg は UTF8フラグつきの文字列であること
 sub relay_to_irc{
 	my($msg)=@_;
-	
 	eval{
 		if( $relay_irc_bot and $relay_irc_channel ){
+			# 最近の発言と重複する内容は送らない
 			if( grep {$_ eq $msg } @duplicate_check ){
-				console "SlackToIRC: omit duplicate message $msg";
+				console "SlackToIRC: omit duplicate message %s",$msg;
 				return;
 			}
 			push @duplicate_check,$msg;
 			shift @duplicate_check if @duplicate_check > 10;
 
-			console "SlackToIRC: $relay_irc_channel $msg ";
-			$relay_irc_bot->{irc}->send_msg( NOTICE => $relay_irc_channel , $relay_irc_bot->{encode}($msg) );
+			#
+			console "SlackToIRC: %s %s",$relay_irc_channel,$msg;
+			$relay_irc_bot->{irc}->send_msg( NOTICE => $relay_irc_channel ,$relay_irc_bot->{encode}($msg) );
 		}
 	};
-	$@ and console "relay_to_irc: $@";
+	$@ and console "SlackToIRC: $@";
 }
 
 ################################################################################
@@ -649,10 +670,10 @@ my $timer = AnyEvent->timer(
 			my $bot = $config->{irc_server};
 
 			# IRC接続のリトライ
-			bot_connect( $bot );
+			irc_start( $bot );
 
 			# 既に接続しているなら一定時間でPINGを送る
-			bot_ping($bot);
+			irc_ping($bot);
 		}
 
 		# Slack接続のリトライ
