@@ -56,25 +56,25 @@ sub user_agent{
 sub metadata { shift->{metadata} // {} }
 
 #########################################################################
-# �C�x���g���X�i�[�̊Ǘ�
+# イベントリスナーの管理
 
-# �n���h�����o�^����Ă��Ȃ��C�x���g�̃L���b�`�A�b�v�B�����͎��ۂ̃C�x���g�^�C�v�ɂ���ĈقȂ�
+# ハンドラが登録されていないイベントのキャッチアップ。引数は実際のイベントタイプによって異なる
 our $EVENT_CATCH_UP : Constant( '<>catch_up');
 
-# �񓯊������ŃG���[���������ꍇ�ɔ�������C�x���g�B�����̓G���[���b�Z�[�W
+# 非同期処理でエラーがあった場合に発生するイベント。引数はエラーメッセージ
 our $EVENT_ERROR : Constant( '<>error');
 
-# ���M�������b�Z�[�W�ɑ΂���^�C���X�^���v���m�肵����Ă΂��B�����̓��X�|���X��JSON�I�u�W�F�N�g
+# 送信したメッセージに対するタイムスタンプが確定したら呼ばれる。引数はレスポンスのJSONオブジェクト
 our $EVENT_REPLY_TO : Constant( '<>reply_to');
 
-# type�̂Ȃ����m�̃��b�Z�[�W���󂯎�����B�����̓��X�|���X��JSON�I�u�W�F�N�g
+# typeのない未知のメッセージを受け取った。引数はレスポンスのJSONオブジェクト
 our $EVENT_UNKNOWN_MESSAGE : Constant( '<>unknown_message');
 
-# RTM API ��WebSocket �ڑ�������ꂽ
+# RTM API のWebSocket 接続が閉じられた
 our $EVENT_RTM_CONNECTION_FINISHED : Constant( '<>finish');
 
 
-# rmt.start�̃��X�|���X��e��Web API�̃��X�|���X���ʒm�����B�����̓f�[�^��JSON�z��B���X�|���X�S�̂ł͂Ȃ�
+# rmt.startのレスポンスや各種Web APIのレスポンスが通知される。引数はデータのJSON配列。レスポンス全体ではない
 our $EVENT_SELF : Constant( '<>self');
 our $EVENT_TEAM : Constant( '<>team');
 our $EVENT_USERS : Constant( '<>users');
@@ -84,10 +84,10 @@ our $EVENT_MPIMS : Constant( '<>mpims');
 our $EVENT_IMS : Constant( '<>ims');
 our $EVENT_BOTS : Constant( '<>bots' );
 
-# �ق��Ahttps://api.slack.com/events �ɐ�������Ă���C�x���g�^�C�v���w��ł���B
-# �����̓��X�|���X��JSON�I�u�W�F�N�g
+# ほか、https://api.slack.com/events に説明されているイベントタイプを指定できる。
+# 引数はレスポンスのJSONオブジェクト
 
-# �C�x���g�n���h���̓o�^
+# イベントハンドラの登録
 sub on {
 	my $self = shift;
 	my $size = 0+@_;
@@ -98,7 +98,7 @@ sub on {
 	}
 }
 
-# �C�x���g�n���h���̏���
+# イベントハンドラの除去
 sub off {
 	my $self = shift;
 	for(@_){
@@ -106,7 +106,7 @@ sub off {
 	}
 }
 
-# �C�x���g����
+# イベント発火
 sub _fire {
 	my ($self, $type, @args) = @_;
 	my $cb = $self->{registry}{$type};
@@ -114,7 +114,7 @@ sub _fire {
 	$cb and $cb->($self, $type, @args);
 }
 
-# Web API�Ŏ擾�����f�[�^�̃C�x���g����
+# Web APIで取得したデータのイベント発火
 sub _update_info{
 	my($self,$key,$data,$event_name)=@_;
 	return if not defined $data;
@@ -124,7 +124,7 @@ sub _update_info{
 }
 
 #########################################################################
-# WebSocket ���g���� RTM �ڑ�
+# WebSocket を使った RTM 接続
 
 sub status{
 	my $self = shift;
@@ -215,7 +215,7 @@ sub start {
 
 				$self->{is_disposed} and return $conn->close;
 
-				$self->{message_id_seed} = 1; # ���M���b�Z�[�W��ID�̓R�l�N�V�������ƂɃ��j�[�N
+				$self->{message_id_seed} = 1; # 送信メッセージのIDはコネクションごとにユニーク
 
 
 				$self->{pinger} = AnyEvent->timer(
@@ -252,10 +252,10 @@ sub start {
 						# list of event type : see https://api.slack.com/rtm
 					}elsif( $json->{reply_to} ){
 						$self->_fire($EVENT_REPLY_TO, $json);
-						# ���M�������b�Z�[�W��ts���m�肵��
+						# 送信したメッセージのtsが確定した
 					}else{
 						$self->_fire($EVENT_UNKNOWN_MESSAGE, $json);
-						# type�̂Ȃ����m�̃��b�Z�[�W���󂯎����
+						# typeのない未知のメッセージを受け取った
 					}
 				});
 			});
@@ -295,8 +295,8 @@ sub ping {
 
 #######################################################
 
-# Web API �̔񓯊��Ăяo��
-# �Ăяo�����ʂ�RTM�C�x���g�Ɠ����R�[���o�b�N�ŋA��B�G���[�R�[���o�b�N�͕ʓr�w�肷��
+# Web API の非同期呼び出し
+# 呼び出し結果はRTMイベントと同じコールバックで帰る。エラーコールバックは別途指定する
 sub _call_list_api{
 	my($self,$url,$key,$key2,$event_type,$cb_error)=@_;
 
