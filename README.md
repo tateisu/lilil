@@ -1,16 +1,24 @@
 # perl-irc-slack-relay-bot
 SlackとIRCのチャンネル間でメッセージをリレーするbot。Perlで書きました
 
+# 挙動のクセなど
+- 複数の接続・チャンネルを扱えます
+- IRCの発言は最大15秒待機して、複数の発言を1メッセージにまとめてからSlackに送ります
+- IRCのNOTICEメッセージをリレーするかどうかは config.plで選択可能です。
+- Slackからのメッセージの取得にはWebSocketのRTM APIを使っています。一部のプロキシ下など、WebSocketが使えない環境では動作しません。
+
 # 依存関係
-use JSON;
-use Carp;
-use Data::Dump;
-use Furl;
-use Encode;
-use Time::HiRes qw(time);
-use AnyEvent;
-use AnyEvent::HTTP;
-use AnyEvent::IRC::Connection;
+- AnyEvent
+- AnyEvent::Socket
+- AnyEvent::Handle
+- AnyEvent::HTTP
+- AnyEvent::WebSocket::Client
+- Scalar::Util
+- Encode
+- JSON
+- Data::Dump
+- Time::HiRes
+- Attribute::Constant
 
 # 使い方
 
@@ -26,13 +34,7 @@ use AnyEvent::IRC::Connection;
 `emacs config.pl`
 
 スクリプトに実行権限を付与します
-`chmod +x ./start IRCSlackBot.pl`
+`chmod +x ./start ./hup IRCSlackBot.pl`
 
 起動コマンドを実行します
 `./start`
-
-# 挙動のクセなど
-- 複数の接続・チャンネルを扱う機能はありません。
-- IRCの発言は最大15秒待機して、複数の発言を1メッセージにまとめてからSlackに送ります
-- IRCのNOTICEメッセージをリレーするかどうかは config.plで選択可能です。
-- Slackからのメッセージの取得にはWebSocketのRTM APIを使っています。一部のプロキシ下など、WebSocketが使えない環境では動作しません。
