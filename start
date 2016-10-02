@@ -1,7 +1,14 @@
 #!/bin/bash
 
-echo "kill old process..."
-pkill -f '^/usr/bin/perl -- ./IRCSlackBot.pl'
+PID=`cat bot.pid`
+if [ -z "$PID" ]; then
+	echo "missing PID."
+else
+	echo "kill pid $PID ..."
+	kill $PID
+	echo "sleep 1 second ..."
+	sleep 1
+fi
 
 echo "start new process..."
 ./IRCSlackBot.pl </dev/null >stdout.log 2>stderr.log &

@@ -1,0 +1,9 @@
+#!/bin/bash
+
+PID=`cat bot.pid`;
+if [ -z "$PID" ]; then
+	echo "missing PID."
+else
+	echo "hup pid $PID ..."
+	kill -HUP $PID
+fi

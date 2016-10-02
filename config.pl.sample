@@ -3,47 +3,111 @@ use utf8;
 use strict;
 use warnings;
 
-{
+my $dummy_value = {
 	
-	slack_bot_api_token => 'write slack bot api access token',
-	slack_channel_name => 'write slack channel name for relay. ex )#tate-bot-test',
+	debug_level => 'debug',
+	
+	pid_file => 'bot.pid',
+	
 
-	slack_user_list_interval => 300,
-	slack_dont_relay_notice => 1,
-	slack_ping_interval => 60,
-
-	irc_server => {
-		# ログに出るサーバ名
-		Name => "write any name of this irc connection setting",
-		
-		# サーバ指定。
-		# FIXME: 複数サーバに交互に接続する機能があるといいのかも。今回はいらないが。
-		ServerSpec => {
-			Nick	 => 'write nick name of this irc bot',
-			Server	 => 'write server host. ex) irc.livedoor.ne.jp',
-			Port	 => '6667',# ポート番号,
-			Username => 'write user name',
-			Ircname  => 'write real name',
-			Bitmode => 8, # 8は+i相当
-			msg_length => 2048,
+	slack_connections => [
+		{
+			name => 'slack1',
+			disabled => 0,
+			ping_interval => 60,
+			api_token => 'your-bot-api-token',
+			user_agent => 'tateisu/perl-irc-slack-relay-bot',
+			user_list_interval => 300,
 		},
-		
-		# MOTDを受け取った後にjoinするチャネル
-		JoinChannel =>[
-			'write channel name to join. ex)#たてSlackぼっと',
-		],
 
-		# set 1 if character encoding is JIS-2022-jp, set 0 if UTF-8
-		is_jis => 1,
+		{
+			name => 'juggler',
+			disabled => 0,
+			ping_interval => 60,
+			api_token => 'your-bot-api-token',
+			user_agent => 'tateisu/perl-irc-slack-relay-bot',
+			user_list_interval => 300,
+		},
+	],
 
-		# (内部)再接続時にjoinするチャネル。これはinviteされたチャネルを含むはずだ
-		CurrentChannel => {},
-		
-		# write regex for auto op(+o)
-		AutoOpRegEx  => [
-#			qr/^tate.+\Q!~tATE-0dBPg@\E/i,
-		],
-		
-		ping_interval => 60,
-	},
+	irc_connections => [
+		{
+			name => 'irc1',
+			ping_interval => 60,
+
+			server	 => 'server.host.name', # サーバ名
+			port	 => '6667',# ポート番号,
+			nick	 => 'nick_name',
+			user_name => 'user_name',
+			real_name => 'read_name',
+
+			# 1 for iso-2022-jp, 0 for UTF-8
+			is_jis => 1,
+
+			# chanels to join when after connection authoprized.
+			auto_join =>[
+				'#channel1', '#channel2', # ...
+			],
+
+			# auto +o for bot's administrator
+			auto_op => [
+				qr/\A[^!]+\Q!~tateisu\@card.juggler.jp\E\z/i,
+				qr/\A[^!]+\Q!~tateisu\@219.94.142.150\E\z/i,
+			],
+		},
+
+		{
+			name => 'irc2',
+			ping_interval => 60,
+
+
+			server	 => 'server.host.name', # サーバ名
+			port	 => '6667',# ポート番号,
+			nick	 => 'nick_name',
+			user_name => 'user_name',
+			real_name => 'read_name',
+
+			# 1 for iso-2022-jp, 0 for UTF-8
+			is_jis => 1,
+
+			# chanels to join when after connection authoprized.
+			auto_join =>[
+				'#channel1', '#channel2', # ...
+			],
+
+			# auto +o for bot's administrator
+			auto_op => [
+				qr/\A[^!]+\Q!~tateisu\@card.juggler.jp\E\z/i,
+				qr/\A[^!]+\Q!~tateisu\@219.94.142.150\E\z/i,
+			],
+		},
+	],
+
+	relay_rules => [
+		{
+			slack_conn => 'slack1',
+			slack_channel => '#channel1',
+
+			irc_conn => 'irc1',
+			irc_channel => '#channel1',
+			
+			slack_to_irc => 1,
+			irc_to_slack => 1,
+
+			dont_relay_notice =>0,
+			disabled=>0,
+		},
+
+		{
+			slack_conn => 'juggler',
+			slack_channel => '#random',
+			irc_conn => 'juggler1',
+			irc_channel => '#たてSlackぼっと',
+
+			slack_to_irc => 1,
+			irc_to_slack => 1,
+			dont_relay_notice =>1,
+			disabled=>0,
+		},
+	],
 };
