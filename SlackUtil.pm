@@ -31,11 +31,13 @@ sub decode_message{
 		my $link = $1;
 		$after .= decode_entity( substr($src,$start,$-[0] - $start) );
 		$start = $+[0];
-		#
 		if( $link =~ /([\#\@])[^\|]*\|(.+)/ ){
+			# <@user_id|username>
+			# <#channel_id|channel_name>
 			$after .= decode_entity( $1.$2 );
-		}elsif( $link =~ /[^\|]*\|(.+)/ ){
-			$after .= decode_entity( $1 );
+		}elsif( $link =~ /([^\|]*)\|(.+)/ ){
+			# <url|caption>
+			$after .= decode_entity( $2 ) ." ".decode_entity( $1 );
 		}else{
 			$after .= decode_entity( $link );
 		}

@@ -105,6 +105,7 @@ our %catch_up_ignore = map{ ($_,1) } (
 	'irc_mode', # 
 	'irc_332', # topic
 	'irc_topic', # topic
+	'irc_part', # 退出
 );
 
 

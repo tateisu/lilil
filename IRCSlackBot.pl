@@ -241,7 +241,7 @@ sub cb_slack_relay{
 			next;
 		}
 
-		$logger->i("=>IRC %s %s %s",$relay->{irc_conn}, $relay->{irc_channel},$msg);
+		$logger->i("I[%s]=>%s %s",$relay->{irc_conn}, $relay->{irc_channel},$msg);
 		$irc_bot->send('NOTICE',$irc_to->{channel_raw},$irc_bot->{encode}($msg));
 		++$count_fanout;
 	}
@@ -310,7 +310,7 @@ sub cb_irc_relay{
 			next;
 		}
 
-		$logger->i("=>Slack %s %s %s %s",$relay->{slack_conn}, $relay->{slack_channel},$from_nick,$msg);
+		$logger->i("S[%s]=>%s %s %s",$relay->{slack_conn}, $relay->{slack_channel},$from_nick,$msg);
 
 		if( $is_action ){
 			if( $is_notice ){

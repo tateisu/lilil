@@ -11,6 +11,12 @@ use SlackConnection;
 
 use Data::Dump qw(dump);
 
+# これらのsubtype は通常メッセージと同じに扱う
+our %subtype_thru = map{ ($_,1) } qw( file_share channel_join channel_leave );
+
+# これらのsubtype は捨てる
+our %subtype_drop = map{ ($_,1) } qw(  );
+
 sub new {
 	my $class = shift;
 	
@@ -131,6 +137,23 @@ sub on_timer{
 	);
 
 	$self->{conn}->on(
+		# ignore some events
+		[
+			$SlackConnection::EVENT_REPLY_TO, #送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
+
+			'accounts_changed event', # 公式Webクライアントがユーザのログインアカウントのリストを更新するのに使われる。他のクライアントはこのイベントを無視するべき
+			'reconnect_url', # The reconnect_url event is currently unsupported and experimental.
+			'presence_change', # このボットはユーザのアクティブ状態に興味がない
+			'file_public', #  A file was made public
+			'file_shared', #  A file was shared
+			'user_typing',# このボットはユーザの入力中状態に興味がない
+			'pong',# pingへの応答
+			'reaction_added', # リアクション追加は無視する
+			'team_pref_change', #チーム設定の変化
+			'team_rename', #チーム名の変化
+			'emoji_changed', # 絵文字の登録、変更
+			
+		] => sub{},
 
 		$SlackConnection::EVENT_CATCH_UP => sub {
 			my(undef, $event_type, @args) = @_;
@@ -163,74 +186,55 @@ sub on_timer{
 			}
 
 		},
-
-		$SlackConnection::EVENT_USERS => sub {
+		[qw(channel_joined channel_created)]=> sub {
 			my(undef, $event_type, $data) = @_;
+			my $channel = $data->{channel};
+			$self->{cb_channel}( $self, $channel );
+			$self->{logger}->i("$event_type: $channel->{id},$channel->{name}");
+		},
 
-		    for my $user ( @$data ){
+		[ $SlackConnection::EVENT_USERS , $SlackConnection::EVENT_BOTS ] => sub {
+			my(undef, $event_type, $list) = @_;
+
+		    for my $user ( @$list ){
 				$self->user_update( $user );
 			}
 
-			$self->{logger}->i("got user list. size=%s", scalar( %{ $self->{user_map} } ) );
+			$self->{logger}->i("$event_type. user_map.size=%s", scalar( %{ $self->{user_map} } ) );
 			$self->{user_map_update} = time;
 		},
-
-		user_change => sub {
+		[qw( team_join user_change bot_added bot_changed)] => sub{
 			my(undef, $event_type, $data) = @_;
-
-			my $user = $data->{user};
-			$self->{logger}->i("user_change: $user->{id},$user->{name}");
+			my $user = ( $data->{user} // $data->{bot} );
 			$self->user_update( $user );
+			$self->{logger}->i("$event_type: $user->{id},$user->{name}");
 		},
 		
-		channel_joined => sub {
-			my(undef, $event_type, $data) = @_;
-
-			my $channel = $data->{channel};
-			$self->{cb_channel}( $self, $channel );
-			$self->{logger}->i("channel_joined: $channel->{id},$channel->{name}");
-		},
-		channel_created  => sub {
-			my(undef, $event_type, $data) = @_;
-			my $channel = $data->{channel};
-			$self->{cb_channel}( $self, $channel );
-			$self->{logger}->i("channel_created: $channel->{id},$channel->{name}");
-		},
-
+		
 		$SlackConnection::EVENT_TEAM => sub {} ,
 		$SlackConnection::EVENT_GROUPS => sub {} ,
 		$SlackConnection::EVENT_MPIMS => sub {} ,
 		$SlackConnection::EVENT_IMS => sub {} ,
-		$SlackConnection::EVENT_BOTS => sub {} ,
-
-		#送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
-		$SlackConnection::EVENT_REPLY_TO => sub {},
 
 		hello => sub {
 			$self->{logger}->i("connection ready.");
 		},
 
-		# The reconnect_url event is currently unsupported and experimental.
-		reconnect_url => sub {},
-
-		# このボットはユーザのアクティブ状態に興味がない
-		presence_change => sub {},
-
-		# このボットはユーザの入力中状態に興味がない
-		user_typing => sub {},
-
-		# pingへの応答
-		pong => sub {},
-
-		# リアクション追加は無視する
-		reaction_added => sub {},
-
 		message => sub {
 			my($conn, $event_type, $message) = @_;
-		
+
 			return if $self->{is_disposed};
-		
-		
+
+			if( $self->{config}{dump_all_message} ){
+				if( not $message->{subtype}
+				and not $message->{attachments}
+				){
+					# dont dump this
+				}else{
+					$self->{logger}->d("dump_all_message: %s",dump($message) );
+				}
+			}
+
 			eval{
 				$message->{subtype}='' if not defined $message->{subtype};
 				if( $message->{subtype} eq 'message_changed'){
@@ -295,22 +299,30 @@ sub on_timer{
 					return;
 				}
 
-				# subtype によっては特殊な出力が必要
-				if( $message->{subtype} eq "channel_join" ){
-					$self->_filter_and_relay( $message->{channel},"${from} さんが参加しました");
-				}elsif( $message->{subtype} eq "channel_leave" ){
-					$self->_filter_and_relay( $message->{channel},"${from} さんが退出しました");
-				}else{
-					$self->{logger}->w("missing subtype? %s",dump($message)) if $message->{subtype};
-
-					if( defined $msg and length $msg ){
-						my @lines = split /[\x0d\x0a]+/,SlackUtil::decode_message($msg);
-						for my $line (@lines){
-							next if not ( defined $msg and length $msg ) ;
-							$self->_filter_and_relay( $message->{channel},"<$from> $line");
-						}
+				if( $message->{subtype} ){
+					if( $subtype_thru{ $message->{subtype} } ){
+						# ダンプしないが普通のメッセージと同じに扱う
+					}elsif( $subtype_drop{ $message->{subtype} } ){
+						# リレーしない
+						return;
+					}else{
+						# 未知のsubtype
+						$self->{logger}->w("unknown subtype? %s",dump($message));
 					}
 				}
+
+				if( defined $msg and length $msg ){
+					my @lines = split /[\x0d\x0a]+/,SlackUtil::decode_message($msg);
+					for my $line (@lines){
+						next if not ( defined $msg and length $msg ) ;
+						$self->_filter_and_relay( $message->{channel},"<$from> $line");
+					}
+				}
+#				if( $message->{attachments} ){
+#					for my $a (@{ $message->{attachments} }){
+#						my $msg = $a->{title};
+#					}
+#				}
 			};
 			$@ and $self->{logger}->e("message handling failed. $@");
 		}
@@ -326,7 +338,7 @@ sub _filter_and_relay {
 
 	# 最近の発言と重複する内容は送らない
 	my $ra = $self->{duplicate_check}{$channel_id};
-	$ra or $self->{duplicate_check}{$channel_id} = [];
+	$ra or $ra = $self->{duplicate_check}{$channel_id} = [];
 	if( grep {$_ eq $msg } @$ra ){
 		$self->{logger}->i("omit duplicate message %s",$msg);
 		return;
