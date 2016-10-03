@@ -23,9 +23,9 @@ sub new {
 		logger => Logger->new(prefix=>"IRCBot:"),
 		last_connection_start =>0,
 		last_ping_sent => time,
+		channel_map =>{},
 		cb_relay => sub{},
-		cb_channel => sub{},
-		
+		cb_status => sub{},
 		@_,
 	}, $class;
 }
@@ -332,7 +332,7 @@ sub on_timer{
 				$self->{logger}->i("%s: join %s",$channel,$from);
 				$self->{JoinChannelFixed}{$channel} or $self->{CurrentChannel}{$channel}=1;
 				
-				$self->{cb_channel}( $self, $channel_raw,$channel );
+				$self->channel_update( $channel_raw,$channel );
 			}
 		},
 		
@@ -409,6 +409,40 @@ sub send{
 }
 
 
+sub channel_update{
+	my( $self, $channel_raw,$channel ) = @_;
+
+	my $channel_lc = IRCUtil::lc_irc($channel);
+	$self->{channel_map}{ $channel_lc } = {
+		channel => $channel,
+		channel_raw => $channel_raw,
+		channel_lc => $channel_lc,
+	};
+	$self->{logger}->v("channel %s",$channel);
+}
+sub find_channel_by_name{
+	my($self,$name_lc)=@_;
+	return $self->{channel_map}{ $name_lc };
+}
 
 1;
 __END__
+
+	# find channel
+	my $v = $irc_channels{ $irc_bot->{config}{name}."<>".$channel_lc};
+	$v or return $logger->w("unknown IRC channel: %s %s",$irc_bot->{config}{name},$channel);
+
+		
+		#my %irc_channels;
+			cb_channel => \&cb_irc_channel,
+		my $irc_to = $irc_channels{  ."<>". $relay->{irc_channel_lc}};
+		if(not $irc_to){
+			$logger->w("unknown irc channel: %s %s",$relay->{irc_conn} , $relay->{irc_channel_lc});
+			next;
+		}
+
+		#
+		my $irc_bot = $irc_to->{bot};
+		
+
+

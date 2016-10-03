@@ -29,9 +29,10 @@ our $config;
 my @slack_bots;
 my @irc_bots;
 my @relay_rules;
-my %irc_channels;
-my %slack_channels_id;
-my %slack_channels_name;
+
+my %slack_bot_map;
+my %irc_bot_map;
+
 
 sub reload{
 	my($allow_die)=@_;
@@ -136,32 +137,34 @@ sub reload{
 		$bot->dispose;
 	}
 	undef @slack_bots;
+	undef %slack_bot_map;
 	for my $c ( @{ $config->{slack_connections} } ){
 		next if $c->{disabled};
 		my $bot = new SlackBot(
-			cb_channel => \&cb_slack_channel,
 			cb_relay => \&cb_slack_relay,
 			cb_status=> \&cb_status,
 		);
 		$bot->config( $c );
 		$bot->{logger}->debug_level($debug_level);
 		push @slack_bots,$bot;
+		$slack_bot_map{ $c->{name} } = $bot;
 	}
 	
 	for my $bot ( @irc_bots ){
 		$bot->dispose;
 	}
 	undef @irc_bots;
+	undef %irc_bot_map;
 	for my $c ( @{ $config->{irc_connections} } ){
 		next if $c->{disabled};
 		my $bot = new IRCBot(
-			cb_channel => \&cb_irc_channel,
 			cb_relay => \&cb_irc_relay,
 			cb_status=> \&cb_status,
 		);
 		$bot->config( $c );
 		$bot->{logger}->debug_level($debug_level);
 		push @irc_bots,$bot;
+		$irc_bot_map{ $c->{name} } = $bot;
 	}
 	
 	@relay_rules = @{ $config->{relay_rules} };
@@ -185,28 +188,14 @@ sub check_relay_config{
 ###########################################################
 # callback for SlackBot
 
-sub cb_slack_channel{
-	my( $slack_bot, $channel ) = @_;
-	my $v = {
-		bot => $slack_bot,
-		channel => $channel,
-	};
-	$slack_channels_id{ $slack_bot->{config}{name}."#".$channel->{id} }=$v;
-	$slack_channels_name{ $slack_bot->{config}{name}."#".$channel->{name} }=$v;
-
-	$logger->v("S\[%s\]channel %s \#%s",$slack_bot->{config}{name},$channel->{id},$channel->{name});
-}
-
 sub cb_slack_relay{
 	my( $slack_bot,$channel_id,$msg) = @_;
 	
 	# find channel name by id
-	my $v = $slack_channels_id{ $slack_bot->{config}{name}."#".$channel_id};
-	$v or return $logger->w("unknown slack channel: %s %s",$slack_bot->{config}{name},$channel_id);
-	my $slack_channel_name = '#'.$v->{channel}{name};
+	my $slack_channel = $slack_bot->find_channel_by_id( $channel_id );
+	$slack_channel or return $logger->w("S[%s]unknown slack channel. id=%s",$slack_bot->{config}{name},$channel_id);
 
 	my @errors;
-
 	my $count_fanout = 0;
 
 	for my $relay (@relay_rules){
@@ -214,8 +203,8 @@ sub cb_slack_relay{
 			push @errors,"skip rule: slack_conn not match. $relay->{slack_conn} $slack_bot->{config}{name}";
 			next;
 		}
-		if( $relay->{slack_channel} ne $slack_channel_name ){
-			push @errors,"skip rule: slack_channel not match. $relay->{slack_channel} $slack_channel_name";
+		if( $relay->{slack_channel} ne "\#$slack_channel->{name}" ){
+			push @errors,"skip rule: slack_channel not match. $relay->{slack_channel} \#$slack_channel->{name}";
 			next;
 		}
 		if( not $relay->{slack_to_irc} ){
@@ -227,22 +216,20 @@ sub cb_slack_relay{
 			next;
 		}
 
-		#
-		my $irc_to = $irc_channels{ $relay->{irc_conn} ."<>". $relay->{irc_channel_lc}};
-		if(not $irc_to){
-			$logger->w("unknown irc channel: %s %s",$relay->{irc_conn} , $relay->{irc_channel_lc});
+		my $irc_bot = $irc_bot_map{ $relay->{irc_conn} };
+		if( not $irc_bot ){
+			$logger->w("unknown irc_conn '%s'",$relay->{irc_conn});
+		}elsif(not $irc_bot->is_ready){
+			$logger->w("I[%s]not ready to relay.",$relay->{irc_conn});
 			next;
 		}
-
-		#
-		my $irc_bot = $irc_to->{bot};
-		if(not $irc_bot->is_ready){
-			$logger->w("not ready to relay: IRC %s %s",$relay->{irc_conn} , $relay->{irc_channel});
+		my $irc_channel = $irc_bot->find_channel_by_name( $relay->{irc_channel_lc} );
+		if( not $irc_channel ){
+			$logger->w("I[%s]unknown irc_channel '%s'",$relay->{irc_conn},$relay->{irc_channel});
 			next;
 		}
-
 		$logger->i("I[%s]=>%s %s",$relay->{irc_conn}, $relay->{irc_channel},$msg);
-		$irc_bot->send('NOTICE',$irc_to->{channel_raw},$irc_bot->{encode}($msg));
+		$irc_bot->send('NOTICE',$irc_channel->{channel_raw},$irc_bot->{encode}($msg));
 		++$count_fanout;
 	}
 	if( not $count_fanout ){
@@ -255,32 +242,12 @@ sub cb_slack_relay{
 ###########################################################
 # callback for IRCBot
 
-sub cb_irc_channel{
-	my( $irc_bot, $channel_raw,$channel ) = @_;
-
-	my $channel_lc = IRCUtil::lc_irc($channel);
-	my $k = $irc_bot->{config}{name} ."<>". $channel_lc;
-	my $v = {
-		bot => $irc_bot,
-		channel_raw =>  $channel_raw,
-		channel => $channel,
-		channel_lc => $channel_lc,
-	};
-	$irc_channels{$k}=$v;
-	$logger->v("I\[%s\]channel %s",$irc_bot->{config}{name},$channel);
-}
-
 sub cb_irc_relay{
 	my($irc_bot, $from_nick,$command,$channel_raw, $channel, $msg )=@_;
 
 	my $channel_lc = IRCUtil::lc_irc( $channel );
 
-	# find channel
-	my $v = $irc_channels{ $irc_bot->{config}{name}."<>".$channel_lc};
-	$v or return $logger->w("unknown IRC channel: %s %s",$irc_bot->{config}{name},$channel);
-
 	my $is_notice = ($command =~ /notice/i);
-	
 
 	my $is_action = 0;
 	if( $msg =~ s/\A\x01ACTION\s+(.+)\x01\z/$1/ ){
@@ -292,21 +259,23 @@ sub cb_irc_relay{
 		next if $relay->{irc_conn} ne $irc_bot->{config}{name};
 		next if $relay->{irc_channel_lc} ne $channel_lc;
 
-		#
-		my $slack_to = $slack_channels_name{ $relay->{slack_conn} . $relay->{slack_channel}};
-		if( not $slack_to ){
-			$logger->w("unknown slack channel: %s %s",$relay->{slack_conn} , $relay->{slack_channel});
+		if( $is_notice and $relay->{dont_relay_notice} ){
+			$logger->v("NOTICEをリレーしない設定なので無視します");
 			next;
 		}
 
-		#
-		my $slack_bot = $slack_to->{bot};
-		if( not $slack_bot->is_ready ){
-			$logger->w("not ready to relay: Slack %s %s",$relay->{slack_conn} , $relay->{slack_channel});
+		my $slack_bot = $slack_bot_map{ $relay->{slack_conn} };
+		if( not $slack_bot ){
+			$logger->w("unknown slack_conn '%s'",$relay->{slack_conn});
+			next;
+		}elsif( not $slack_bot->is_ready ){
+			$logger->w("S[%s]not ready to relay.",$relay->{slack_conn});
 			next;
 		}
-		if( $is_notice and $relay->{dont_relay_notice} ){
-			$logger->v("NOTICEをリレーしない設定なので無視します");
+
+		my $slack_channel = $slack_bot->find_channel_by_name($relay->{slack_channel});
+		if( not $slack_channel ){
+			$logger->w("S[%s]unknown slack_channel '%s'",$relay->{slack_conn} , $relay->{slack_channel});
 			next;
 		}
 
@@ -314,15 +283,15 @@ sub cb_irc_relay{
 
 		if( $is_action ){
 			if( $is_notice ){
-				$slack_bot->send_message( $slack_to->{channel}{id},"(action) [$from_nick] $msg");
+				$slack_bot->send_message( $slack_channel->{id},"(action) [$from_nick] $msg");
 			}else{
-				$slack_bot->send_message( $slack_to->{channel}{id}, "(action) <$from_nick> $msg");
+				$slack_bot->send_message( $slack_channel->{id}, "(action) <$from_nick> $msg");
 			}
 		}else{
 			if( $is_notice ){
-				$slack_bot->send_message( $slack_to->{channel}{id}, "[$from_nick] $msg");
+				$slack_bot->send_message( $slack_channel->{id}, "[$from_nick] $msg");
 			}else{
-				$slack_bot->send_message( $slack_to->{channel}{id}, "<$from_nick> $msg");
+				$slack_bot->send_message( $slack_channel->{id}, "<$from_nick> $msg");
 			}
 		}
 	}

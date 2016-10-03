@@ -27,13 +27,15 @@ sub new {
 		bot_name => undef,
 		user_map => {},
 		user_map_update => 0,
+		channel_map_id => {},
+		channel_map_name => {},
+		
 		logger => Logger->new(prefix=>"SlackBot:"),
 		
 		tx_cue => {},
 		tx_cue_oldest_time => {},
 		duplicate_check => {},
 		
-		cb_channel => sub{},
 		cb_relay => sub{},
 		cb_status => sub{},
 		
@@ -182,14 +184,14 @@ sub on_timer{
 		$SlackConnection::EVENT_CHANNELS => sub {
 			my(undef, $event_type, $channel_list) = @_;
 		    for my $channel ( @$channel_list ){
-				$self->{cb_channel}( $self, $channel );
+				$self->channel_update( $channel);
 			}
 
 		},
 		[qw(channel_joined channel_created)]=> sub {
 			my(undef, $event_type, $data) = @_;
 			my $channel = $data->{channel};
-			$self->{cb_channel}( $self, $channel );
+			$self->channel_update( $channel );
 			$self->{logger}->i("$event_type: $channel->{id},$channel->{name}");
 		},
 
@@ -226,13 +228,7 @@ sub on_timer{
 			return if $self->{is_disposed};
 
 			if( $self->{config}{dump_all_message} ){
-				if( not $message->{subtype}
-				and not $message->{attachments}
-				){
-					# dont dump this
-				}else{
-					$self->{logger}->d("dump_all_message: %s",dump($message) );
-				}
+				$self->{logger}->d("dump_all_message: %s",dump($message) );
 			}
 
 			eval{
@@ -312,7 +308,7 @@ sub on_timer{
 				}
 
 				if( defined $msg and length $msg ){
-					my @lines = split /[\x0d\x0a]+/,SlackUtil::decode_message($msg);
+					my @lines = split /[\x0d\x0a]+/,$self->decode_message($msg);
 					for my $line (@lines){
 						next if not ( defined $msg and length $msg ) ;
 						$self->_filter_and_relay( $message->{channel},"<$from> $line");
@@ -381,8 +377,24 @@ sub user_update{
 
 	if( $self->{bot_id} and $self->{bot_id} eq $user->{id} ){
 		$self->{bot_name} = $user->{name} if $user->{name};
-		$self->{logger}->i("me: id=$user->{id},name=$user->{name}");
+		$self->{logger}->i("me: %s \@%s",$user->{id},$user->{name});
 	}
+}
+
+sub channel_update{
+	my($self,$channel)=@_;
+	$self->{channel_map_id}{ $channel->{id} } = $channel;
+	$self->{channel_map_name}{ '#'.$channel->{name} } = $channel;
+	$self->{logger}->v("channel: %s \#%s",$channel->{id},$channel->{name});
+}
+
+sub find_channel_by_id{
+	my($self,$id)=@_;
+	return $self->{channel_map_id}{ $id };
+}
+sub find_channel_by_name{
+	my($self,$name)=@_;
+	return $self->{channel_map_name}{ $name };
 }
 
 # onTimerから定期的に呼ばれる。たまにキューに入ったメッセージを出力する
@@ -437,6 +449,40 @@ sub send_message{
 }
 
 
+sub decode_message{
+	my($self,$src) = @_;
+	
+	my $after = "";
+	my $start = 0;
+	my $end = length $src;
+	while( $src =~ /<([^>]*)>/g ){
+		my $link = $1;
+		$after .= SlackUtil::decode_entity( substr($src,$start,$-[0] - $start) );
+		$start = $+[0];
+		if( $link =~ /\A([\#\@])[^\|]*\|(.*)\z/ ){
+			# <@user_id|username>
+			# <#channel_id|channel_name>
+			$after .= SlackUtil::decode_entity( $1.$2 );
+		}elsif( $link =~ /\A\@([^\|]*)\z/ ){
+			# <@user_id>
+			my $user = $self->{user_map}{ $1 };
+			$after .= SlackUtil::decode_entity( $user ? '@'.$user->{name} : $link );
+		}elsif( $link =~ /\A\#([^\|]*)\z/ ){
+			# <#channel_id>
+			my $channel = $self->{channel_map_id}{ $1 };
+			$after .= SlackUtil::decode_entity( $channel ? '#'.$channel->{name} : $link );
+		}elsif( $link =~ /([^\|]*)\|(.*)/ ){
+			# <url|caption>
+			$after .= SlackUtil::decode_entity( $2 ) ." ".SlackUtil::decode_entity( $1 );
+		}else{
+			# <url>
+			$after .= SlackUtil::decode_entity( $link );
+		}
+	}
+	$start < $end and $after .= SlackUtil::decode_entity( substr($src,$start,$end -$start ) );
+
+	return $after;
+}
 
 
 
