@@ -5,10 +5,12 @@ use v5.14;
 use strict;
 use warnings;
 
+use Encode;
+use Data::Dump qw(dump);
+
 use IRCUtil;
 use IRCConnection;
 
-use Encode;
 use JIS4IRC;
 
 my $eucjp = Encode::find_encoding("EUC-JP");
@@ -79,6 +81,33 @@ sub status{
 	return sprintf("connected. last_rx=%d:%02d:%02d",reverse @lt[0..2]);
 }
 
+our %catch_up_ignore = map{ ($_,1) } (
+	'<>buffer_empty',
+	'irc_020',  #Please wait while we process your connection.
+	'irc_002', # Your host is irc.livedoor.ne.jp, running version 2.11.2p3
+	'irc_003', # This server was created Sat Aug 20 2016 at 15:04:35 JST
+	'irc_004', # modeフラグの一覧とか色々
+	'irc_005', # サーバのビルド時設定など
+	'irc_042', # your unique ID
+	'irc_251', # There are 38466 users and 4 services on 27 servers
+	'irc_252', # 81 operators online
+	'irc_253', # 4 unknown connections
+	'irc_254', # 23896 channels formed
+	'irc_255', # I have 3389 users, 0 services and 1 servers
+	'irc_265', # Current local users 3389, max 3794
+	'irc_266', # Current global users 38466, max 39236
+	'irc_375', # - irc.livedoor.ne.jp Message of the Day -
+	'irc_372', # motd line
+	'irc_353', # NAMES reply
+	'irc_366', # "End of NAMES list.
+	'irc_482', # You're not channel operator
+	'irc_pong', # 
+	'irc_mode', # 
+	'irc_332', # topic
+	'irc_topic', # topic
+);
+
+
 sub on_timer{
 	my $self = shift;
 
@@ -132,6 +161,25 @@ sub on_timer{
 
 
 	$self->{conn} = IRCConnection->new();
+
+	my $auto_op = sub{
+		my($conn,$channel_raw,$channel,$target) = @_;
+
+		$target =~ /^([^!]+)/;
+		my $target_nick = $1;
+		
+		for my $re (@{ $self->{config}{auto_op} }){
+			if( $target =~ /$re/ ){
+				$target =~ /^([^!]+)/;
+				$self->{logger}->i("%s: +o to %s",$channel,$target_nick);
+				$self->send( MODE => $channel_raw , "+o",$target_nick );
+				return 1;
+			}
+			$self->{logger}->d("auto_op not match. %s %s",$target,$re);
+		}
+		
+		return 0;
+	};
 
 	my $on_motd = sub{
 		my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
@@ -187,6 +235,11 @@ sub on_timer{
 		
 		##################################
 
+		if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>op\s*\z/ ){
+			$auto_op->($conn,$channel_raw,$channel,$from) or $conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>not match.",$from_nick ));
+			return;
+		}
+
 		if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>exit\s*\z/ ){
 			$self->{logger}->i("%s: exit required by (%s),said (%s)",IRCUtil::fix_channel_name($self->{decode}($channel),1),$from,$msg);
 			$conn->send( PART => $channel_raw );
@@ -199,6 +252,18 @@ sub on_timer{
 	};
 
 	$self->{conn}->on(
+
+		$IRCConnection::EVENT_CATCH_UP=> sub{
+			my($conn,$event_type,@args) = @_;
+			if( not $event_type){
+				use Carp;
+				confess("empty event_type");
+			}else{
+				return if $catch_up_ignore{$event_type};
+				$self->{logger}->i("catch up. %s,%s",$event_type,dump(\@args));
+			}
+		},
+		
 
 		$IRCConnection::EVENT_ERROR => sub {
 			my(undef,$event_type,$error) = @_;
@@ -221,6 +286,17 @@ sub on_timer{
 			$self->{logger}->i("connected. please wait authentication.");
 			$conn->send(NICK => $self->{config}{nick});
 			$conn->send(USER => $self->{config}{user_name}, '*', '0',$self->{encode}($self->{config}{real_name}));
+		},
+
+		# Nickname is already in use.
+		irc_433 => sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			$self->{logger}->w("Nickname is already in use. retry NICK..");
+			my $nick = $self->{config}{nick};
+			my $len = length($nick);
+			$len > 7 and $nick = substr($nick,0,7);
+			$nick .= sprintf("%02d",int rand 100);
+			$conn->send(NICK => $nick);
 		},
 
 		# 認証完了
@@ -250,14 +326,7 @@ sub on_timer{
 			if( $from ne $self->{user_prefix} ){
 				# 他人のjoin
 				# auto-op check
-				for my $re (@{ $self->{config}{auto_op} }){
-					if( $from =~ /$re/ ){
-						$from =~ /^([^!]+)/;
-						$self->{logger}->i("%s: +o to %s",$channel,$1);
-						$self->send( MODE => $channel_raw , "+o",$1 );
-						last;
-					}
-				}
+				$auto_op->($conn,$channel_raw,$channel,$from);
 			}else{
 				$self->{logger}->i("%s: join %s",$channel,$from);
 				$self->{JoinChannelFixed}{$channel} or $self->{CurrentChannel}{$channel}=1;
@@ -291,6 +360,17 @@ sub on_timer{
 			}
 		},
 		
+		irc_quit=> sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			$self->{logger}->i("quit. %s %s",$args->{prefix},$args->{params}[0]);
+		},
+		
+		irc_ping =>sub {
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			$self->{last_ping_sent} = $now;
+			$self->{logger}->v("ping received. returns pong.");
+			$self->{conn}->send( PONG => @{ $args->{params} } );
+		},
 
 		irc_invite => sub{
 			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
@@ -306,6 +386,7 @@ sub on_timer{
 		# メッセージ処理
 		irc_privmsg => $on_message,
 		irc_notice => $on_message,
+		
 	);
 	
 	$self->{logger}->i("connection start. %s:%s", $self->{config}{server},$self->{config}{port});

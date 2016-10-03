@@ -190,6 +190,12 @@ sub on_timer{
 			$self->{cb_channel}( $self, $channel );
 			$self->{logger}->i("channel_joined: $channel->{id},$channel->{name}");
 		},
+		channel_created  => sub {
+			my(undef, $event_type, $data) = @_;
+			my $channel = $data->{channel};
+			$self->{cb_channel}( $self, $channel );
+			$self->{logger}->i("channel_created: $channel->{id},$channel->{name}");
+		},
 
 		$SlackConnection::EVENT_TEAM => sub {} ,
 		$SlackConnection::EVENT_GROUPS => sub {} ,
@@ -235,6 +241,9 @@ sub on_timer{
 				}
 
 				if( not $message->{user} ){
+					# dropboxのリンクなどを貼ると出て来る邪魔なメッセージを除去する
+					return if $message->{subtype} eq "bot_message" and $message->{username} eq 'slackbot';
+
 					$self->{logger}->e("missing user? %s",dump($message));
 					$message->{user}='?';
 				}

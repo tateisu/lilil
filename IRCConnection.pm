@@ -143,8 +143,8 @@ sub connect {
 						
 						$self->{authorized} = 1 if $m->{command} eq '001';
 
-						$self->_fire(read => $m);
-						$self->_fire('irc_*' => $m);
+					#	$self->_fire(read => $m);
+					#	$self->_fire('irc_*' => $m);
 						$self->_fire('irc_' . (lc $m->{command}), $m);
 					});
 				}

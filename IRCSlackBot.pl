@@ -85,6 +85,8 @@ sub reload{
 			if( not check_relay_config( $conf_relay, $logger ) ){
 				$logger->e("relay_rules[$n] has error.");
 				$valid = 0;
+			}elsif( $conf_relay->{disabled} ){
+				# 無効なのでチェックしない
 			}else{
 				$conf_relay->{irc_channel} = IRCUtil::fix_channel_name( $conf_relay->{irc_channel} ,1);
 				$conf_relay->{irc_channel_lc} = IRCUtil::lc_irc( $conf_relay->{irc_channel} );
@@ -93,17 +95,23 @@ sub reload{
 				if( not $conf_slack ){
 					$logger->e("relay_rules[$n]:slack_conn '$conf_relay->{slack_conn}' is not defined.");
 					$valid = 0;
+				}elsif( $conf_slack->{disabled} ){
+					$logger->e("relay_rules[$n]:slack_conn '$conf_relay->{slack_conn}' is disabled.");
+					$valid = 0;
 				}
 
 				my($conf_irc) = grep { $_->{name} eq $conf_relay->{irc_conn} } @{ $config->{irc_connections} };
 				if( not $conf_irc ){
 					$logger->e("relay_rules[$n]:irc_conn '$conf_relay->{irc_conn}' is not defined.");
 					$valid = 0;
+				}elsif( $conf_irc->{disabled} ){
+					$logger->e("relay_rules[$n]:irc_conn '$conf_relay->{irc_conn}' is disabled.");
+					$valid = 0;
 				}else{
 					my $channel = grep{ IRCUtil::lc_irc( IRCUtil::fix_channel_name($_,1) ) eq $conf_relay->{irc_channel_lc}} @{ $conf_irc->{auto_join} };
 					if( not $channel ){
-						$logger->e("relay_rules[$n]:irc_channel '$conf_relay->{irc_channel}' is not defined in auto_join.");
-						$valid = 0;
+						# 自動で補う
+						push @{ $conf_irc->{auto_join} }, $conf_relay->{irc_channel};
 					}
 				}
 			}
