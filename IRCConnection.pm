@@ -52,7 +52,13 @@ sub on {
 	for( my $i=0 ; $i<$size-1 ; $i+=2 ){
 		my $type = $_[$i];
 		my $cb = $_[$i+1];
-		$self->{registry}{$type} = $cb;
+		if( ref $type ){
+			for(@$type){
+				$self->{registry}{$_} = $cb;
+			}
+		}else{
+			$self->{registry}{$type} = $cb;
+		}
 	}
 }
 

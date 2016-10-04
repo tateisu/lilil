@@ -19,3 +19,14 @@ sub fix_channel_name($$){
 	#
 	return $channel;
 }
+
+sub match_prefix_re_list{
+	my($target,$re_list)=@_;
+	if( $re_list ){
+		for my $re (@$re_list){
+			$target =~ /$re/ and return "".$re;
+		}
+	}
+	return undef;
+}
+	

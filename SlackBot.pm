@@ -6,10 +6,42 @@ use strict;
 use warnings;
 use utf8;
 
+use ConfigUtil;
 use SlackUtil;
 use SlackConnection;
 
 use Data::Dump qw(dump);
+
+###############################################################
+# 設定データの検証
+
+my %config_keywords = ConfigUtil::parse_config_keywords(qw(
+	name:s
+	disabled:b
+	api_token:s
+	user_agent:s
+
+	ping_interval:d
+	user_list_interval:d
+
+	ignore_user:a
+	dump_all_message:b
+));
+
+sub check_config{
+	return ConfigUtil::check_config_keywords(\%config_keywords,@_);
+}
+
+sub config_equals{
+	my($a,$b)=@_;
+	return $a->{name} eq $b->{name} 
+	and not ( $a->{disabled} xor $b->{disabled} )
+	and $a->{api_token} eq $b->{api_token}
+	and $a->{user_agent} eq $b->{user_agent}
+	;
+}
+
+###############################################################
 
 # これらのsubtype は通常メッセージと同じに扱う
 our %subtype_thru = map{ ($_,1) } qw( file_share channel_join channel_leave );
@@ -64,38 +96,6 @@ sub config{
 	return $self->{config};
 }
 
-# static method. 設定を確認する
-sub check_config{
-	my($config,$logger)=@_;
-
-	my $valid = 1;
-
-	if( not $config->{name} ){
-		$logger->e( "config error: missing name." );
-		$valid = 0;
-	}
-	if( not $config->{api_token} ){
-		$logger->e( "config error: missing api_token" );
-		$valid = 0;
-	}
-	if( not $config->{ping_interval} ){
-		$logger->e( "config error: missing ping_interval" );
-		$valid = 0;
-	}
-	if( not $config->{user_list_interval} ){
-		$logger->e( "config error: missing user_list_interval" );
-		$valid = 0;
-	}
-	
-	return $valid;
-}
-sub config_equals{
-	my($a,$b)=@_;
-	return $a->{name} eq $b->{name} 
-	and $a->{api_token} and $b->{api_token}
-	and $a->{user_agent} and $b->{user_agent}
-	;
-}
 
 sub on_timer{
 	my $self = shift;

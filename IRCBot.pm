@@ -4,10 +4,10 @@ $IRCBot::VERSION = '0.161002'; # YYMMDD
 use v5.14;
 use strict;
 use warnings;
-
 use Encode;
 use Data::Dump qw(dump);
 
+use ConfigUtil;
 use IRCUtil;
 use IRCConnection;
 
@@ -46,25 +46,26 @@ sub config{
 	return $self->{config};
 }
 
-# static method
-sub check_config{
-	my($config,$logger)=@_;
+my %config_keywords = ConfigUtil::parse_config_keywords(qw(
+	name:s
+	server:s
+	nick:s
+	user_name:s
+	real_name:s
 
-	my $valid = 1;
-	
-	for( qw( name ping_interval server port nick user_name real_name auto_join auto_op )){
-		if( not $config->{$_} ){
-			$logger->e( "config error: missing $_" );
-			$valid = 0;
-		}
-	}
-	for( qw( is_jis )){
-		if( not exists $config->{$_} ){
-			$logger->e( "config error: missing $_" );
-			$valid = 0;
-		}
-	}
-	return $valid;
+	port:d
+	ping_interval:d
+
+	auto_join:a
+	auto_op:a
+	ignore_user:a
+
+	is_jis:b
+	disabled:b
+));
+
+sub check_config{
+	return ConfigUtil::check_config_keywords(\%config_keywords,@_);
 }
 
 ###########################################################
@@ -106,6 +107,8 @@ our %catch_up_ignore = map{ ($_,1) } (
 	'irc_332', # topic
 	'irc_topic', # topic
 	'irc_part', # 退出
+	'irc_333', # channel creator
+	'irc_nick', # ニックネーム変更
 );
 
 
@@ -165,92 +168,17 @@ sub on_timer{
 
 	my $auto_op = sub{
 		my($conn,$channel_raw,$channel,$target) = @_;
-
-		$target =~ /^([^!]+)/;
-		my $target_nick = $1;
-		
-		for my $re (@{ $self->{config}{auto_op} }){
-			if( $target =~ /$re/ ){
-				$target =~ /^([^!]+)/;
-				$self->{logger}->i("%s: +o to %s",$channel,$target_nick);
-				$self->send( MODE => $channel_raw , "+o",$target_nick );
-				return 1;
-			}
-			$self->{logger}->d("auto_op not match. %s %s",$target,$re);
-		}
-		
-		return 0;
-	};
-
-	my $on_motd = sub{
-		my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
-		#
-		$self->{logger}->i("end of MOTD.");
-		for my $channel (keys %{ $self->{JoinChannelFixed} } ){
-			$self->{logger}->i("try join to $channel");
-			$conn->send( JOIN => $self->{encode}( $channel ) );
-		}
-		for my $channel (keys %{ $self->{CurrentChannel} } ){
-			$self->{logger}->i("try join to $channel");
-			$conn->send( JOIN => $self->{encode}( $channel ) );
+		my $re = IRCUtil::match_prefix_re_list( $target,$self->{config}{auto_op} );
+		if($re){
+			$target =~ /^([^!]+)/;
+			my $target_nick = $1;
+			$self->{logger}->i("%s +o %s by auto_op %s",$channel,$target_nick,$re);
+			$self->send( MODE => $channel_raw , "+o",$target_nick );
+			return 1;
 		}
 	};
+
 	
-	my $on_message = sub{
-		my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
-
-		my $from = $args->{prefix};
-		my $command = $args->{command};
-
-		my $channel_raw = $args->{params}[0];
-		if(ref $channel_raw ){
-			$channel_raw = shift @$channel_raw;
-		}
-		my $channel = IRCUtil::fix_channel_name($self->{decode}($channel_raw),1);
-
-		my $msg = $self->{decode}( $args->{params}[-1]);
-
-		$self->{logger}->i("%s %s %s %s",$command,$from,$channel,$msg);
-
-		##############################
-
-		$self->{user_prefix} =~ /^([^!]+)/;
-		my $my_nick = $1;
-
-		$from =~ /^([^!]+)/;
-		my $from_nick = $1;
-
-		# pingコマンド
-		if( $my_nick ){
-			if( $msg =~ /\A\s*$my_nick>ping\s*\z/i ){
-				$conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>pong." ));
-				return;
-			}elsif( $msg =~ /\A\s*$my_nick>status\s*\z/i ){
-				my @status = $self->{cb_status}();
-				for( @status ){
-					$conn->send( NOTICE => $channel_raw ,$self->{encode}($_));
-				}
-				return;
-			}
-		}
-		
-		##################################
-
-		if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>op\s*\z/ ){
-			$auto_op->($conn,$channel_raw,$channel,$from) or $conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>not match.",$from_nick ));
-			return;
-		}
-
-		if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>exit\s*\z/ ){
-			$self->{logger}->i("%s: exit required by (%s),said (%s)",IRCUtil::fix_channel_name($self->{decode}($channel),1),$from,$msg);
-			$conn->send( PART => $channel_raw );
-			return;
-		}
-
-		
-		$self->{cb_relay}->( $self, $from_nick,$command,$channel_raw, $channel, $msg );
-		
-	};
 
 	$self->{conn}->on(
 
@@ -314,9 +242,20 @@ sub on_timer{
 		},
 
 		# MOTD終了
-		irc_376 => $on_motd, # end of MOTD
-		irc_422 => $on_motd, # no MOTD
-
+		[qw( irc_376 irc_422 )] => sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			#
+			$self->{logger}->i("end of MOTD.");
+			for my $channel (keys %{ $self->{JoinChannelFixed} } ){
+				$self->{logger}->i("try join to $channel");
+				$conn->send( JOIN => $self->{encode}( $channel ) );
+			}
+			for my $channel (keys %{ $self->{CurrentChannel} } ){
+				$self->{logger}->i("try join to $channel");
+				$conn->send( JOIN => $self->{encode}( $channel ) );
+			}
+		},
+		
 		irc_join => sub{
 			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
 			#
@@ -324,22 +263,21 @@ sub on_timer{
 			my $channel_raw = $args->{params}[0];
 			my $channel = IRCUtil::fix_channel_name($self->{decode}($channel_raw),1);
 			
-			if( $from ne $self->{user_prefix} ){
-				# 他人のjoin
-				# auto-op check
-				$auto_op->($conn,$channel_raw,$channel,$from);
-			}else{
+			if( $from eq $self->{user_prefix} ){
 				$self->{logger}->i("%s: join %s",$channel,$from);
 				$self->{JoinChannelFixed}{$channel} or $self->{CurrentChannel}{$channel}=1;
 				
 				$self->channel_update( $channel_raw,$channel );
+			}else{
+				# auto-op check
+				$auto_op->($conn,$channel_raw,$channel,$from);
 			}
 		},
 		
 		irc_kick => sub{
 			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
 			#
-			my $from = $args->{prefix}; # joinした人
+			my $from = $args->{prefix}; # kickした人
 			
 			my $line = $self->{encode}( $args->{params}[0]);
 			my $channel_raw = $args->{params}[0];
@@ -385,8 +323,67 @@ sub on_timer{
 		},
 
 		# メッセージ処理
-		irc_privmsg => $on_message,
-		irc_notice => $on_message,
+		[qw( irc_privmsg irc_notice )] => sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+
+			my $from = $args->{prefix};
+			my $command = $args->{command};
+			
+			
+
+			my $channel_raw = $args->{params}[0];
+			if(ref $channel_raw ){
+				$channel_raw = shift @$channel_raw;
+			}
+			my $channel = IRCUtil::fix_channel_name($self->{decode}($channel_raw),1);
+
+			my $msg = $self->{decode}( $args->{params}[-1]);
+
+			$self->{logger}->i("%s %s %s %s",$command,$from,$channel,$msg);
+
+			##############################
+
+			$self->{user_prefix} =~ /^([^!]+)/;
+			my $my_nick = $1;
+
+			$from =~ /^([^!]+)/;
+			my $from_nick = $1;
+
+			my $ignore_re = IRCUtil::match_prefix_re_list( $from , $self->{config}{ignore_user} );
+			$ignore_re and return $self->{logger}->i("igonre_user $from by $ignore_re");
+		
+			# pingコマンド
+			if( $my_nick ){
+				if( $msg =~ /\A\s*$my_nick>ping\s*\z/i ){
+					$conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>pong." ));
+					return;
+				}elsif( $msg =~ /\A\s*$my_nick>status\s*\z/i ){
+					my @status = $self->{cb_status}();
+					for( @status ){
+						$conn->send( NOTICE => $channel_raw ,$self->{encode}($_));
+					}
+					return;
+				}
+			}
+			
+			##################################
+
+			if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>op\s*\z/ ){
+				$auto_op->($conn,$channel_raw,$channel,$from) or $conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>not match.",$from_nick ));
+				return;
+			}
+
+			if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>exit\s*\z/ ){
+				$self->{logger}->i("%s: exit required by (%s),said (%s)",IRCUtil::fix_channel_name($self->{decode}($channel),1),$from,$msg);
+				$conn->send( PART => $channel_raw );
+				return;
+			}
+
+			
+			$self->{cb_relay}->( $self, $from_nick,$command,$channel_raw, $channel, $msg );
+			
+		},
+
 		
 	);
 	

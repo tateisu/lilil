@@ -11,6 +11,7 @@ use Data::Dump qw(dump);
 
 # アプリ内モジュール
 use Logger;
+use ConfigUtil;
 use SlackUtil;
 use SlackBot;
 use IRCUtil;
@@ -19,11 +20,34 @@ use IRCBot;
 binmode STDOUT, ":utf8";
 binmode STDERR, ":utf8";
 
+# 設定ファイル
+my $config_file = shift // 'config.pl';
+
+#########################################################################
+
+my %relay_keywords = ConfigUtil::parse_config_keywords(qw(
+	slack_conn:s
+	slack_channel:s
+	irc_conn:s
+	irc_channel:s
+	
+	disabled:b
+	slack_to_irc:b
+	irc_to_slack:b
+	dont_relay_notice:b
+	use_notice:b
+));
+
+sub check_relay_config{
+	return ConfigUtil::check_config_keywords(\%relay_keywords,@_);
+}
+
+
+#########################################################################
+
 my $logger = Logger->new();
 $logger->prefix("");
 
-# 設定ファイル
-my $config_file = shift // 'config.pl';
 our $config;
 
 my @slack_bots;
@@ -170,20 +194,7 @@ sub reload{
 	@relay_rules = @{ $config->{relay_rules} };
 }
 
-sub check_relay_config{
-	my( $relay, $logger )=@_;
-	my $valid = 1;
-	
-	# required string
-	for(qw( slack_conn slack_channel irc_conn irc_channel )){
-		my $v = $relay->{$_};
-		if( not defined $v or not length $v ){
-			$logger->e("config error: missing $_");
-			$valid = 0;
-		}
-	}
-	$valid;
-}
+
 
 ###########################################################
 # callback for SlackBot
@@ -197,6 +208,7 @@ sub cb_slack_relay{
 
 	my @errors;
 	my $count_fanout = 0;
+	
 
 	for my $relay (@relay_rules){
 		if( $relay->{slack_conn} ne $slack_bot->{config}{name} ){
@@ -228,8 +240,9 @@ sub cb_slack_relay{
 			$logger->w("I[%s]unknown irc_channel '%s'",$relay->{irc_conn},$relay->{irc_channel});
 			next;
 		}
+		my $relay_command = $relay->{use_notice}? 'NOTICE':'PRIVMSG';
 		$logger->i("I[%s]=>%s %s",$relay->{irc_conn}, $relay->{irc_channel},$msg);
-		$irc_bot->send('NOTICE',$irc_channel->{channel_raw},$irc_bot->{encode}($msg));
+		$irc_bot->send($relay_command,$irc_channel->{channel_raw},$irc_bot->{encode}($msg));
 		++$count_fanout;
 	}
 	if( not $count_fanout ){
