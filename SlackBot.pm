@@ -47,7 +47,22 @@ sub config_equals{
 our %subtype_thru = map{ ($_,1) } qw( file_share channel_join channel_leave );
 
 # これらのsubtype は捨てる
-our %subtype_drop = map{ ($_,1) } qw(  );
+our %subtype_drop = map{ ($_,1) } qw(
+	channel_archive
+	channel_unarchive
+	channel_name
+	channel_purpose
+	channel_topic
+
+	group_archive
+	group_unarchive
+	group_join
+	group_leave
+	group_name
+	group_purpose
+	group_topic
+	
+);
 
 sub new {
 	my $class = shift;

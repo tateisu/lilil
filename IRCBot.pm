@@ -13,6 +13,38 @@ use IRCConnection;
 
 use JIS4IRC;
 
+my %config_keywords = ConfigUtil::parse_config_keywords(qw(
+	name:s
+	server:s
+	nick:s
+	user_name:s
+	real_name:s
+
+	port:d
+	ping_interval:d
+	flood_protection_penalty_time_max:do
+	flood_protection_penalty_time_privmsg:do
+	flood_protection_penalty_time_mode:do
+	flood_protection_penalty_time_other:do
+	flood_protection_penalty_chars_per_second:do
+	flood_protection_test_privmsg:ao
+	flood_protection_test_op:ao
+	
+	auto_join:a
+	auto_op:a
+	ignore_user:a
+
+	is_jis:b
+	disabled:b
+	fp_test:b
+));
+
+sub check_config{
+	return ConfigUtil::check_config_keywords(\%config_keywords,@_);
+}
+
+###########################################################
+
 my $eucjp = Encode::find_encoding("EUC-JP");
 my $utf8 = Encode::find_encoding("utf8");
 
@@ -46,27 +78,6 @@ sub config{
 	return $self->{config};
 }
 
-my %config_keywords = ConfigUtil::parse_config_keywords(qw(
-	name:s
-	server:s
-	nick:s
-	user_name:s
-	real_name:s
-
-	port:d
-	ping_interval:d
-
-	auto_join:a
-	auto_op:a
-	ignore_user:a
-
-	is_jis:b
-	disabled:b
-));
-
-sub check_config{
-	return ConfigUtil::check_config_keywords(\%config_keywords,@_);
-}
 
 ###########################################################
 # IRC接続の管理
@@ -83,7 +94,6 @@ sub status{
 }
 
 our %catch_up_ignore = map{ ($_,1) } (
-	'<>buffer_empty',
 	'irc_020',  #Please wait while we process your connection.
 	'irc_002', # Your host is irc.livedoor.ne.jp, running version 2.11.2p3
 	'irc_003', # This server was created Sat Aug 20 2016 at 15:04:35 JST
@@ -117,6 +127,7 @@ sub on_timer{
 
 	my $now = time;
 	if( $self->{conn} ){
+
 		my $last_read = $self->{conn}->last_read;
 		my $delta = $now - $last_read;
 		if( $delta > $self->{config}{ping_interval} * 3 ){
@@ -126,14 +137,39 @@ sub on_timer{
 			undef $self->{conn};
 			# fall thru.
 		}else{
-			# 接続済みで001メッセージを受け取った後なら、たまにPINGを送る
+
+			# 送信キューを吐き出す
+			$self->_flush_send_cue();
+
+
+
 			if( $self->{conn} && $self->{server_prefix} ){
+				# 接続済みで001メッセージを受け取った後なら、たまにPINGを送る
+				
 				# smart ping
 				my $last_time = ( $self->{last_ping_sent} > $last_read ? $self->{last_ping_sent} : $last_read );
 				if( $now - $last_time >= $self->{config}{ping_interval} ){
 					$self->{last_ping_sent} = $now;
 					$self->{logger}->v("sending ping.");
-					$self->{conn}->send( PING =>  $self->{server_prefix} );
+					$self->send( PING =>  $self->{server_prefix} );
+				}
+				
+				my $test;
+				
+				$test = $self->{config}{flood_protection_test_privmsg};
+				if($test and $self->{fp_penalty_time} < $self->{fp_penalty_time_max} ){
+					my $irc_channel = $self->find_channel_by_name( IRCUtil::lc_irc(IRCUtil::fix_channel_name($test->[0],0)));
+					if( $irc_channel ){
+						$self->send( PRIVMSG => $irc_channel->{channel_raw},$self->{encode}($test->[1]));
+					}
+				}
+				
+				$test = $self->{config}{flood_protection_test_op};
+				if($test and $self->{fp_penalty_time} < $self->{fp_penalty_time_max} ){
+					my $irc_channel = $self->find_channel_by_name( IRCUtil::lc_irc(IRCUtil::fix_channel_name($test->[0],0)));
+					if( $irc_channel ){
+						$self->send( MODE => $irc_channel->{channel_raw} , "+o",$self->{encode}($test->[1]));
+					}
 				}
 			}
 			
@@ -163,6 +199,39 @@ sub on_timer{
 		@{$self->{config}{auto_join}}
 	};
 
+	
+	{
+		my( $iv );
+		$self->{fp_tx_cue} =[];
+		$self->{fp_last_decrease} = time;
+		$self->{fp_penalty_time} = 0;
+		
+		
+		# ペナルティタイムの上限。これを超えないように待ってから発言する
+		$iv = $self->{config}{flood_protection_penalty_time_max};
+		$iv = 512 if not defined $iv or $iv <= 0;
+		$self->{fp_penalty_time_max} = $iv;
+
+		# privmsgを送るときの発言ペナルティ。これとメッセージ長さのペナルティの合計が、メッセージのペナルティとなる
+		$iv = $self->{config}{flood_protection_penalty_time_privmsg};
+		$iv = 2 if not defined $iv or $iv <= 0;
+		$self->{fp_penalty_privmsg} = $iv;
+
+		# modeを送るときの発言ペナルティ。これとメッセージ長さのペナルティの合計が、メッセージのペナルティとなる
+		$iv = $self->{config}{flood_protection_penalty_time_mode};
+		$iv = 4 if not defined $iv or $iv <= 0;
+		$self->{fp_penalty_mode} = $iv;
+
+		# 他のコマンドを送るときの発言ペナルティ。これとメッセージ長さのペナルティの合計が、メッセージのペナルティとなる
+		$iv = $self->{config}{flood_protection_penalty_time_other};
+		$iv = 3 if not defined $iv or $iv <= 0;
+		$self->{fp_penalty_other} = $iv;
+
+		# メッセージのバイト数に応じてかかるペナルティ。ペナルティ1秒あたりのバイト数を指定する
+		$iv = $self->{config}{flood_protection_penalty_chars_per_second};
+		$iv = 16 if not defined $iv or $iv <= 0;
+		$self->{fp_penalty_cps} = $iv;
+	}
 
 	$self->{conn} = IRCConnection->new();
 
@@ -212,9 +281,15 @@ sub on_timer{
 		# 接続できた
 		$IRCConnection::EVENT_CONNECT=> sub{
 			my($conn,$event_type) = @_;
+
 			$self->{logger}->i("connected. please wait authentication.");
-			$conn->send(NICK => $self->{config}{nick});
-			$conn->send(USER => $self->{config}{user_name}, '*', '0',$self->{encode}($self->{config}{real_name}));
+			$self->send(NICK => $self->{config}{nick});
+			$self->send(USER => $self->{config}{user_name}, '*', '0',$self->{encode}($self->{config}{real_name}));
+		},
+
+		$IRCConnection::EVENT_TX_READY=> sub{
+			my($conn,$event_type) = @_;
+			$self->_flush_send_cue();
 		},
 
 		# Nickname is already in use.
@@ -225,7 +300,7 @@ sub on_timer{
 			my $len = length($nick);
 			$len > 7 and $nick = substr($nick,0,7);
 			$nick .= sprintf("%02d",int rand 100);
-			$conn->send(NICK => $nick);
+			$self->send(NICK => $nick);
 		},
 
 		# 認証完了
@@ -248,11 +323,11 @@ sub on_timer{
 			$self->{logger}->i("end of MOTD.");
 			for my $channel (keys %{ $self->{JoinChannelFixed} } ){
 				$self->{logger}->i("try join to $channel");
-				$conn->send( JOIN => $self->{encode}( $channel ) );
+				$self->send( JOIN => $self->{encode}( $channel ) );
 			}
 			for my $channel (keys %{ $self->{CurrentChannel} } ){
 				$self->{logger}->i("try join to $channel");
-				$conn->send( JOIN => $self->{encode}( $channel ) );
+				$self->send( JOIN => $self->{encode}( $channel ) );
 			}
 		},
 		
@@ -308,7 +383,7 @@ sub on_timer{
 			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
 			$self->{last_ping_sent} = $now;
 			$self->{logger}->v("ping received. returns pong.");
-			$self->{conn}->send( PONG => @{ $args->{params} } );
+			$self->send( PONG => @{ $args->{params} } );
 		},
 
 		irc_invite => sub{
@@ -319,7 +394,7 @@ sub on_timer{
 			my $channel = IRCUtil::fix_channel_name($self->{decode}($channel_raw),1);
 			
 			$self->{logger}->i("invited to %s by %s",$channel,$from );
-			$conn->send( JOIN => $channel_raw );
+			$self->send( JOIN => $channel_raw );
 		},
 
 		# メッセージ処理
@@ -355,12 +430,12 @@ sub on_timer{
 			# pingコマンド
 			if( $my_nick ){
 				if( $msg =~ /\A\s*$my_nick>ping\s*\z/i ){
-					$conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>pong." ));
+					$self->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>pong." ));
 					return;
 				}elsif( $msg =~ /\A\s*$my_nick>status\s*\z/i ){
 					my @status = $self->{cb_status}();
 					for( @status ){
-						$conn->send( NOTICE => $channel_raw ,$self->{encode}($_));
+						$self->send( NOTICE => $channel_raw ,$self->{encode}($_));
 					}
 					return;
 				}
@@ -369,13 +444,13 @@ sub on_timer{
 			##################################
 
 			if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>op\s*\z/ ){
-				$auto_op->($conn,$channel_raw,$channel,$from) or $conn->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>not match.",$from_nick ));
+				$auto_op->($conn,$channel_raw,$channel,$from) or $self->send( NOTICE => $channel_raw ,$self->{encode}( sprintf "%s>not match.",$from_nick ));
 				return;
 			}
 
 			if( $channel =~ /\A[\!\#\&\+]/ and $msg =~ /\A\s*$my_nick>exit\s*\z/ ){
 				$self->{logger}->i("%s: exit required by (%s),said (%s)",IRCUtil::fix_channel_name($self->{decode}($channel),1),$from,$msg);
-				$conn->send( PART => $channel_raw );
+				$self->send( PART => $channel_raw );
 				return;
 			}
 
@@ -396,13 +471,59 @@ sub is_ready{
 	not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready;
 }
 
-# $msg は UTF8フラグつきの文字列であること
+
+sub _flush_send_cue{
+	my $self = shift;
+
+	my $cue = $self->{fp_tx_cue};
+	return if not @$cue;
+
+	# 前回からの時間経過を測定する
+	my $now = time;
+	my $delta = $now - $self->{fp_last_decrease};
+	$self->{fp_last_decrease} = $now;
+
+	# ペナルティタイムを減少させる
+	if( $delta > 0 and $self->{fp_penalty_time} > 0 ){
+		my $v = $self->{fp_penalty_time} - $delta;
+		$self->{fp_penalty_time} = $v <= 0 ? 0 : $v;
+	}
+
+	my $line = $cue->[0];
+	my $line_penalty = $line->[0];
+	my $remain = $self->{fp_penalty_time} + $line_penalty - $self->{fp_penalty_time_max};
+	$remain > 0 and return $self->{logger}->d("flood protection: waiting %s seconds. penalty_time=%d, line_penalty=%d",$remain,$self->{fp_penalty_time},$line_penalty);
+	
+	$self->{fp_penalty_time} += $line_penalty;
+	shift @$cue;
+	shift @$line;
+	eval{ $self->{conn}->send( @$line ); };
+	$@ and $self->{logger}->i("send failed. %s",$@);
+}
+
+
+
+
 sub send{
 	my $self = shift;
-	eval{
-		$self->{conn}->send( @_ );
-	};
-	$@ and $self->{logger}->i("send failed. %s",$@);
+
+	my $command = $_[0];
+	my $line_length = length( join(' ',@_)) +2 +(@_>=2? 1: 0 );
+	if( $line_length > 0 ){
+		
+		my $penalty_chars_per_seconds = $self->{fp_penalty_cps};
+		
+		my $line_penalty = 
+			( $command =~ /\A(?:privmsg|notice)\z/ ? $self->{fp_penalty_privmsg}
+			: $command =~ /\A(?:mode)\z/ ? $self->{fp_penalty_mode}
+			: $self->{fp_penalty_other}
+			) + int( ($line_length + $penalty_chars_per_seconds -1 )/ $penalty_chars_per_seconds );
+
+		$self->{logger}->d("line_penalty=%s,command=%s,length=%s,current_penalty=%d",$line_penalty,$command,$line_length,$self->{fp_penalty_time});
+
+		push @{ $self->{fp_tx_cue} } , [$line_penalty, @_];
+		$self->_flush_send_cue();
+	}
 }
 
 
@@ -417,6 +538,7 @@ sub channel_update{
 	};
 	$self->{logger}->v("channel %s",$channel);
 }
+
 sub find_channel_by_name{
 	my($self,$name_lc)=@_;
 	return $self->{channel_map}{ $name_lc };
@@ -424,22 +546,3 @@ sub find_channel_by_name{
 
 1;
 __END__
-
-	# find channel
-	my $v = $irc_channels{ $irc_bot->{config}{name}."<>".$channel_lc};
-	$v or return $logger->w("unknown IRC channel: %s %s",$irc_bot->{config}{name},$channel);
-
-		
-		#my %irc_channels;
-			cb_channel => \&cb_irc_channel,
-		my $irc_to = $irc_channels{  ."<>". $relay->{irc_channel_lc}};
-		if(not $irc_to){
-			$logger->w("unknown irc channel: %s %s",$relay->{irc_conn} , $relay->{irc_channel_lc});
-			next;
-		}
-
-		#
-		my $irc_bot = $irc_to->{bot};
-		
-
-

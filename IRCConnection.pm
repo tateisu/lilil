@@ -42,7 +42,7 @@ our $EVENT_ERROR : Constant( '<>error');
 our $EVENT_CONNECT : Constant( '<>connect'); # ソケット接続が確立された。認証は行われていない
 our $EVENT_DISCONNECT : Constant( '<>disconnect'); # 接続が完了した
 
-our $EVENT_BUFFER_EMPTY : Constant( '<>buffer_empty'); # AnyEvent::Handle のon_drain が発生した
+our $EVENT_TX_READY : Constant( '<>tx_ready'); # AnyEvent::Handle のon_drain が発生した
 
 
 # イベントハンドラの登録
@@ -131,7 +131,7 @@ sub connect {
 				,on_eof => sub{ $self->disconnect( "end of stream." ) }
 				,on_error => sub{ $self->disconnect( "connection lost. $!") }
 				
-				,on_drain => sub{ $self->_fire($EVENT_BUFFER_EMPTY) }
+				,on_drain => sub{ $self->_fire($EVENT_TX_READY) }
 				
 				,on_read => sub {
 					my ($hdl) = @_;
@@ -191,13 +191,9 @@ sub parse_irc_msg {
 
 sub send{
 	my ($self, @args) = @_;
-
 	return unless $self->{socket};
-	
-	my $trail = @args ? ' :'.pop @args : '';
-
+	my $trail = @args >= 2 ? ' :'.pop @args : '';
 	$self->{socket}->push_write ( join(' ',@args).$trail."\015\012" );
-
 }
 
 1;

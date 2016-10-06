@@ -97,6 +97,23 @@ my $dummy_value = {
 				qr/\A[^\!]+\!\~fate\@\Qio.jupiter.ansi.jp\E\z/i,
 				qr/\A[^\!]+\!\~fate\@\Q174.136.108.99\E\z/i,
 			],
+			
+			
+			# TX flood protection: max limit to stop sending message.
+			flood_protection_penalty_time_max => 512,
+
+			# TX flood protection: base penalty time for PRIVMSG,NOTICE message.
+			flood_protection_penalty_time_privmsg => 2,
+			
+			# TX flood protection: base penalty time for MODE message.
+			flood_protection_penalty_time_mode => 4,
+			
+			# TX flood protection: base penalty time for other message.
+			flood_protection_penalty_time_other => 3,
+			
+			# TX flood protection: additional penalty time. ceil(message_length/this_param) is added.
+			flood_protection_penalty_chars_per_second => 16,
+
 		},
 
 		{

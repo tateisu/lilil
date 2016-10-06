@@ -16,24 +16,45 @@ sub check_config_keywords{
 	while(my($name,$type)=each %$keywords){
 		my $v = $config->{$name};
 		if( $type eq 's' ){
-			if( not $v or not length $v ){
-				$logger->e( "config error: missing '%s'. string required.",$name );
+			if( not defined $v or not length $v ){
+				$logger->e( "config error: '%s' is required. please set string value.",$name );
 				$valid = 0;
 			}
+			
+		}elsif( $type eq 'so' ){
+			# 省略OK. 特にチェックすることはない
+
 		}elsif( $type eq 'd' ){
-			if( not $v or not $v =~ /\A\d+\z/ ){
-				$logger->e( "config error: missing '%s'. integer required.",$name );
+			if( not defined $v or not $v =~ /\A\d+\z/ ){
+				$logger->e( "config error: '%s' is required. please set integer value.",$name );
 				$valid = 0;
 			}
+		}elsif( $type eq 'do' ){
+
+			if( not defined $v or not length $v ){
+				# 省略OK
+			}elsif( not $v =~ /\A\d+\z/ ){
+				$logger->e( "config error: '%s' is optional, or set integer value.",$name );
+				$valid = 0;
+			}
+
 		}elsif( $type eq 'a' ){
 			if( not defined $v ){
 				# 自動で補う
 				$config->{$name} = [];
 			}elsif( 'ARRAY' ne reftype $v ){
-				$logger->w( "config warning: '%s' must be array-ref, but data type is %s.",$name,reftype($v) );
-				# 自動で補う
-				$config->{$name} = [];
+				$logger->e( "config warning: '%s' is required. please set array-ref. specified data is %s.",$name,reftype($v) );
+				$valid = 0;
 			}
+
+		}elsif( $type eq 'ao' ){
+			if( not defined $v ){
+				# 省略OK
+			}elsif( 'ARRAY' ne reftype $v ){
+				$logger->e( "config warning: '%s' is optional, or set array-ref value, specified data is %s.",$name,reftype($v) );
+				$valid = 0;
+			}
+
 		}elsif( $type eq 'b' ){
 			# boolean required. 省略したらfalse扱い
 		}else{
