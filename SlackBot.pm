@@ -153,7 +153,10 @@ sub on_timer{
 			'reaction_added', # リアクション追加は無視する
 			'team_pref_change', #チーム設定の変化
 			'team_rename', #チーム名の変化
+			'email_domain_changed', # The team email domain has changed
 			'emoji_changed', # 絵文字の登録、変更
+			'dnd_updated_user', # Do not Disturb settings changed for a team member
+			'dnd_updated', # Do not Disturb settings changed for the current user
 			
 		] => sub{},
 
@@ -242,7 +245,7 @@ sub on_timer{
 
 				if( not $message->{user} ){
 					# dropboxのリンクなどを貼ると出て来る邪魔なメッセージを除去する
-					return if $message->{subtype} eq "bot_message" and $message->{username} eq 'slackbot';
+					return if $message->{subtype} eq "bot_message" and $message->{is_ephemeral};
 
 					$self->{logger}->e("missing user? %s",dump($message));
 					$message->{user}='?';
@@ -259,7 +262,17 @@ sub on_timer{
 				}else{
 					$member = $self->{user_map}{ $message->{user} };
 				}
-				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
+				my $from =  (not defined $member ) ? "id:$message->{user}" : $member->{name};
+
+
+				if( $self->{config}{ignore_user} ){
+					for my $re ( @{$self->{config}{ignore_user}} ){
+						if( "id:$message->{user}" =~ /$re/ or $from =~ /$re/ ){
+							$self->{logger}->e("ignore_user %s,%s,%s","id:$message->{user}",$from,$re);
+							return;
+						}
+					}
+				}
 
 				# メッセージ本文
 				my $msg = $message->{text};
