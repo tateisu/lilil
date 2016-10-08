@@ -334,7 +334,7 @@ sub get_user_list{
 
 sub get_channel_list{
 	my($self,$cb_error)=@_;
-	$self->_call_list_api($URL_CHANNEL_LIST,'channels','channels',$EVENT_USERS,$cb_error);
+	$self->_call_list_api($URL_CHANNEL_LIST,'channels','channels',$EVENT_CHANNELS,$cb_error);
 }
 
 #######################################################
