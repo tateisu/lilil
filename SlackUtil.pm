@@ -1,5 +1,5 @@
 package SlackUtil;
-$SlackUtil::VERSION = '0.161002'; # YYMMDD
+$SlackUtil::VERSION = '0.161003'; # YYMMDD
 
 use v5.14;
 use strict;

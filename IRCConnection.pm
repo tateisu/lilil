@@ -1,5 +1,5 @@
 package IRCConnection;
-$IRCConnection::VERSION = '0.161002'; # YYMMDD
+$IRCConnection::VERSION = '0.161009'; # YYMMDD
 
 use v5.14;
 use strict;
@@ -157,7 +157,7 @@ sub connect {
 			);
 			$self->_fire($EVENT_CONNECT);
 		};
-		$@ and return  $self->_fire( $EVENT_ERROR,"error. $@");
+		$@ and return $self->_fire( $EVENT_ERROR,"error. $@");
 	}
 	,(defined $prepare_cb ? (ref $prepare_cb ? $prepare_cb : sub { $prepare_cb }) : ());
 }

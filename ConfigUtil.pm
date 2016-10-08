@@ -1,5 +1,5 @@
 package ConfigUtil;
-$ConfigUtil::VERSION = '0.161004'; # YYMMDD
+$ConfigUtil::VERSION = '0.161006'; # YYMMDD
 
 use strict;
 use warnings;

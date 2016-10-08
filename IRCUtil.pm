@@ -1,5 +1,5 @@
 package IRCUtil;
-$IRCUtil::VERSION = '0.161002'; # YYMMDD
+$IRCUtil::VERSION = '0.161004'; # YYMMDD
 
 use strict;
 use warnings;

@@ -1,5 +1,5 @@
 package SlackConnection;
-$SlackConnection::VERSION = '0.161002'; # YYMMDD
+$SlackConnection::VERSION = '0.161009'; # YYMMDD
 
 use v5.14;
 use strict;
@@ -144,12 +144,12 @@ sub status{
 
 sub is_active{
 	my $self = shift;
-	return $self->{busy_rtm_start} or $self->{busy_wss_connect} or $self->{conn};
+	return( $self->{busy_rtm_start} or $self->{busy_wss_connect} or $self->{conn} );
 }
 
 sub is_ready{
 	my $self = shift;
-	return $self->{conn} and $self->{said_hello};
+	return( $self->{conn} and $self->{said_hello} );
 }
 
 sub is_ping_timeout {
@@ -361,157 +361,3 @@ This module is similar to AnyEvent::SlackRTM, but more suitable for real-world b
 - some function to call Web API in asynchronously. some event to notify its response.
 - function to check incoming message timeout (almost same as ping timeout).
 
-=head1 SYNOPSIS
-
-sub slack_start{
-
-	if( $slack_bot ){
-		return if not $slack_bot->is_ping_timeout;
-		console "Slack: ping timeout.";
-		$slack_bot->dispose;
-		undef $slack_bot;
-	}
-
-	my $now = time;
-	my $remain = $slack_last_connection_start + 60 -$now;
-	if( $remain > 0 ){
-		console "Slack: waiting $remain seconds to restart connection.";
-		return;
-	}
-	$slack_last_connection_start = $now;
-
-	console "Slack: connection start..";
-
-	$slack_bot = SlackConnection->new(
-		token => $config->{slack_bot_api_token},
-		user_agent => $config->{slack_user_agent},
-		ping_interval => 60,
-	);
-
-	$slack_bot->on(
-
-		$SlackConnection::EVENT_CATCH_UP => sub {
-			my($rtm, $event_type, @args) = @_;
-			console "Slack: event=$event_type %s",Data::Dump::dump(\@args);
-		},
-
-		$SlackConnection::EVENT_RTM_CONNECTION_FINISHED => sub {
-			console "Slack: connection finished.";
-			$slack_bot->dispose;
-			undef $slack_bot;
-		},
-
-		$SlackConnection::EVENT_ERROR => sub {
-			my($sb,$event_type,$error)=@_;
-			console "Slack: $error";
-			$slack_bot->dispose;
-			undef $slack_bot;
-		},
-
-		$SlackConnection::EVENT_SELF => sub {
-			my($rtm, $event_type, $data) = @_;
-			$slack_bot_id = $data->{id};
-			console "Slack: me: id=$data->{id},name=$data->{name}";
-		},
-
-		$SlackConnection::EVENT_CHANNELS => sub {
-			my($rtm, $event_type, $data) = @_;
-		    for my $channel ( @$data ){
-				if( "\#$channel->{name}" eq $config->{slack_channel_name} ){
-					$slack_channel_id = $channel->{id};
-					console "Slack Channel: $channel->{id},\#$channel->{name}";
-					last;
-				}
-			}
-			$slack_channel_id or console "missing Slack channel '$config->{slack_channel_name}'";
-		},
-
-		$SlackConnection::EVENT_USERS => sub {
-			my($rtm, $event_type, $data) = @_;
-		    for my $member ( @$data ){
-				$slack_user_map->{ $member->{id} } = $member;
-			}
-			console "slack user list size=".scalar(%$slack_user_map);
-			$slack_user_map_update = time;
-		},
-
-		$SlackConnection::EVENT_TEAM => sub {} ,
-		$SlackConnection::EVENT_GROUPS => sub {} ,
-		$SlackConnection::EVENT_MPIMS => sub {} ,
-		$SlackConnection::EVENT_IMS => sub {} ,
-		$SlackConnection::EVENT_BOTS => sub {} ,
-		$SlackConnection::EVENT_REPLY_TO => sub {},
-
-		hello => sub {
-			console "Slack: connection ready.";
-		},
-
-		reconnect_url => sub {},
-		presence_change => sub {},
-		user_typing => sub {},
-		pong => sub {},
-
-		message => sub {
-			my($rtm, $event_type, $message) = @_;
-			eval{
-				$message->{subtype}='' if not defined $message->{subtype};
-				if( $message->{subtype} eq 'message_changed'){
-					my $old_channel = $message->{channel};
-					$message = $message->{message};
-					$message->{channel} = $old_channel if not $message->{channel};
-					$message->{subtype}='' if not defined $message->{subtype};
-				}
-
-				if( not $message->{user} ){
-					console "missing user? %s",Data::Dump::dump($message);
-					$message->{user}='?';
-				}
-
-				return if defined $slack_bot_id and $slack_bot_id eq $message->{user};
-
-				my $member;
-				if( $message->{user_profile} ){
-					$member = $slack_user_map->{ $message->{user} } = $message->{user_profile};
-				}else{
-					$member = $slack_user_map->{ $message->{user} };
-				}
-				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
-				
-
-				if( defined $message->{channel} 
-				and defined $slack_channel_id
-				and $message->{channel} ne $slack_channel_id 
-				){
-					console "destination not matcn. %s",Data::Dump::dump($message);
-					return;
-				}
-
-				if( $message->{subtype} eq "channel_join" ){
-					#
-				}elsif( $message->{subtype} eq "channel_leave" ){
-					#
-				}else{
-					console "unknown subtype? %s",Data::Dump::dump($message) if $message->{subtype};
-				}
-				
-				my $from =  (not defined $member ) ? $message->{user} : $member->{name};
-				my $msg = $message->{text};
-				if( defined $message->{message} and not defined $msg ){
-					$msg = $message->{message}{text};
-				}
-				if( defined $msg ){
-					my @lines = split /[\x0d\x0a]+/,decode_slack_message($msg);
-					for my $line (@lines){
-						next if not ( defined $line and length $line );
-						relay_to_irc( "<$from> $line");
-					}
-				}
-			};
-			$@ and console $@;
-		}
-	);
-	$slack_bot->start;
-}
-
-
-=cut

@@ -1,5 +1,5 @@
 package IRCBot;
-$IRCBot::VERSION = '0.161002'; # YYMMDD
+$IRCBot::VERSION = '0.161009'; # YYMMDD
 
 use v5.14;
 use strict;
@@ -81,6 +81,12 @@ sub config{
 
 ###########################################################
 # IRC接続の管理
+
+sub is_ready{
+	my $self = shift;
+	return( not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready );
+}
+
 
 sub status{
 	my $self = shift;
@@ -466,11 +472,6 @@ sub on_timer{
 	$self->{conn}->connect( $self->{config}{server},$self->{config}{port});
 }
 
-sub is_ready{
-	my $self = shift;
-	not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready;
-}
-
 
 sub _flush_send_cue{
 	my $self = shift;
@@ -501,9 +502,6 @@ sub _flush_send_cue{
 	$@ and $self->{logger}->i("send failed. %s",$@);
 }
 
-
-
-
 sub send{
 	my $self = shift;
 
@@ -519,13 +517,12 @@ sub send{
 			: $self->{fp_penalty_other}
 			) + int( ($line_length + $penalty_chars_per_seconds -1 )/ $penalty_chars_per_seconds );
 
-		$self->{logger}->d("line_penalty=%s,command=%s,length=%s,current_penalty=%d",$line_penalty,$command,$line_length,$self->{fp_penalty_time});
+		# $self->{logger}->d("line_penalty=%s,command=%s,length=%s,current_penalty=%d",$line_penalty,$command,$line_length,$self->{fp_penalty_time});
 
 		push @{ $self->{fp_tx_cue} } , [$line_penalty, @_];
 		$self->_flush_send_cue();
 	}
 }
-
 
 sub channel_update{
 	my( $self, $channel_raw,$channel ) = @_;

@@ -1,5 +1,5 @@
 package SlackBot;
-$SlackBot::VERSION = '0.161002'; # YYMMDD
+$SlackBot::VERSION = '0.161009'; # YYMMDD
 
 use v5.14;
 use strict;
@@ -34,11 +34,12 @@ sub check_config{
 
 sub config_equals{
 	my($a,$b)=@_;
-	return $a->{name} eq $b->{name} 
-	and not ( $a->{disabled} xor $b->{disabled} )
-	and $a->{api_token} eq $b->{api_token}
-	and $a->{user_agent} eq $b->{user_agent}
-	;
+	return
+		( $a->{name} eq $b->{name} 
+		and not ( $a->{disabled} xor $b->{disabled} )
+		and $a->{api_token} eq $b->{api_token}
+		and $a->{user_agent} eq $b->{user_agent}
+		);
 }
 
 ###############################################################
@@ -283,8 +284,7 @@ sub on_timer{
 				if( $self->{config}{ignore_user} ){
 					for my $re ( @{$self->{config}{ignore_user}} ){
 						if( "id:$message->{user}" =~ /$re/ or $from =~ /$re/ ){
-							$self->{logger}->e("ignore_user %s,%s,%s","id:$message->{user}",$from,$re);
-							return;
+							return $self->{logger}->e("ignore_user %s,%s,%s","id:$message->{user}",$from,$re);
 						}
 					}
 				}
@@ -319,8 +319,7 @@ sub on_timer{
 				
 				# メッセージの宛先が不明
 				if( not defined $message->{channel} ){
-					$self->{logger}->w("missing channel. %s",dump($message));
-					return;
+					return $self->{logger}->w("missing channel. %s",dump($message));
 				}
 
 				if( $message->{subtype} ){
@@ -364,8 +363,7 @@ sub _filter_and_relay {
 	my $ra = $self->{duplicate_check}{$channel_id};
 	$ra or $ra = $self->{duplicate_check}{$channel_id} = [];
 	if( grep {$_ eq $msg } @$ra ){
-		$self->{logger}->i("omit duplicate message %s",$msg);
-		return;
+		return $self->{logger}->i("omit duplicate message %s",$msg);
 	}
 	push @$ra,$msg;
 	shift @$ra if @$ra > 10;
@@ -458,7 +456,7 @@ sub _flush_cue{
 # メッセージを送信可能な状態かどうか
 sub is_ready{
 	my $self = shift;
-	not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready;
+	return( not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready );
 }
 
 # slackのチャンネルにメッセージを送る
