@@ -72,10 +72,12 @@ sub off {
 
 sub _fire{
 	my($self,$type,@args)=@_;
-	
-	my $cb = $self->{registry}{$type};
-	$cb or $cb = $self->{registry}{$EVENT_CATCH_UP};
-	$cb and $cb->($self,$type,@args);
+	eval{
+		my $cb = $self->{registry}{$type};
+		$cb or $cb = $self->{registry}{$EVENT_CATCH_UP};
+		$cb and $cb->($self,$type,@args);
+	};
+	$@ and warn "IRCConnection: event handler died. type=$type, error=$@\n";
 }
 
 ######################################################################

@@ -369,8 +369,8 @@ sub on_timer{
 			$self->{user_prefix} =~ /^([^!]+)/;
 			my $my_nick = $1;
 
-			if( lc_irc($who) eq lc_irc($self->{user_prefix})
-			or	lc_irc($who) eq lc_irc($my_nick)
+			if( IRCUtil::lc_irc($who) eq IRCUtil::lc_irc($self->{user_prefix})
+			or	IRCUtil::lc_irc($who) eq IRCUtil::lc_irc($my_nick)
 			){
 				# 自分がkickされた
 				$self->{logger}->i("%s: kicked (%s) by (%s) %s",$channel,$who,$from,$msg);

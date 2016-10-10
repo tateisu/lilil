@@ -115,9 +115,12 @@ sub off {
 # イベント発火
 sub _fire {
 	my ($self, $type, @args) = @_;
-	my $cb = $self->{registry}{$type};
-	$cb or $cb = $self->{registry}{$EVENT_CATCH_UP};
-	$cb and $cb->($self, $type, @args);
+	eval{
+		my $cb = $self->{registry}{$type};
+		$cb or $cb = $self->{registry}{$EVENT_CATCH_UP};
+		$cb and $cb->($self, $type, @args);
+	};
+	$@ and warn "SlackConnection: event handler died. type=$type, error=$@\n";
 }
 
 # Web APIで取得したデータのイベント発火
