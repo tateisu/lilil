@@ -114,6 +114,12 @@ my $dummy_value = {
 			# TX flood protection: additional penalty time. ceil(message_length/this_param) is added.
 			flood_protection_penalty_chars_per_second => 16,
 
+			# bind source addr#port
+			bind_src => '219.94.142.159#0',
+			
+			# timeout seconds for tcp connect
+			connect_timeout => 120,
+
 		},
 
 		{

@@ -19,6 +19,8 @@ my %config_keywords = ConfigUtil::parse_config_keywords(qw(
 	nick:s
 	user_name:s
 	real_name:s
+	bind_src:s
+	connect_timeout:d
 
 	port:d
 	ping_interval:d
@@ -469,7 +471,7 @@ sub on_timer{
 	);
 	
 	$self->{logger}->i("connection start. %s:%s", $self->{config}{server},$self->{config}{port});
-	$self->{conn}->connect( $self->{config}{server},$self->{config}{port});
+	$self->{conn}->connect( $self->{config}{server},$self->{config}{port} ,$self->{config}{bind_src} , $self->{config}{connect_timeout});
 }
 
 

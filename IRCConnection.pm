@@ -9,6 +9,7 @@ use AnyEvent;
 use AnyEvent::Socket;
 use AnyEvent::Handle;
 use Attribute::Constant;
+use Socket qw();
 
 sub new {
 	my $class = shift;
@@ -110,13 +111,14 @@ sub disconnect {
 }
 
 sub connect {
-	my( $self, $host, $port, $prepare_cb ) = @_;
+	my( $self, $host, $port, $bind_src ,$connect_timeout) = @_;
 
 	$self->{host} = $host;
 	$self->{port} = $port;
-
 	$self->{authorized} = 0;
 	$self->{busy_connect} = 1;
+
+
 	$self->{con_guard} = tcp_connect $host, $port
 	,sub {
 		my($fh)=@_;
@@ -161,7 +163,25 @@ sub connect {
 		};
 		$@ and return $self->_fire( $EVENT_ERROR,"error. $@");
 	}
-	,(defined $prepare_cb ? (ref $prepare_cb ? $prepare_cb : sub { $prepare_cb }) : ());
+	,sub{
+		my($fh) = @_;
+		if( $bind_src ){
+			my( $host,$port ) = split /\#/,$bind_src;
+			my( $err, @res) = Socket::getaddrinfo( $host , $port );
+			if( $err ){
+				warn "getaddrinfo failed. error=",$err,"\n";
+			}elsif( not @res ){
+				warn "getaddrinfo failed. error=empty result.\n";
+			}else{
+				my $ai = shift @res;
+				if( not bind( $fh , $ai->{addr} ) ){
+					warn "bind failed. error=$!\n";
+				}
+			}
+		}
+		return( $connect_timeout or 300 );
+	}
+	;
 }
 
 sub parse_irc_msg {
