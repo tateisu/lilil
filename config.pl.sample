@@ -39,6 +39,10 @@ my $dummy_value = {
 			ignore_user => [qw(
 				tateisu-test
 			)],
+			
+			# send message to slack channel immediately, and append following messages by editing last message. 0:off, 1:on
+			merge_message => 0,
+
 		},
 
 		{

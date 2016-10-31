@@ -26,6 +26,7 @@ my %config_keywords = ConfigUtil::parse_config_keywords(qw(
 
 	ignore_user:a
 	dump_all_message:b
+	merge_message:b
 ));
 
 sub check_config{
@@ -80,8 +81,7 @@ sub new {
 		
 		logger => Logger->new(prefix=>"SlackBot:"),
 		
-		tx_cue => {},
-		tx_cue_oldest_time => {},
+		tx_channel =>{},
 		duplicate_check => {},
 		
 		cb_relay => sub{},
@@ -100,6 +100,12 @@ sub dispose{
 sub status{
 	my $self = shift;
 	$self->{conn} ? $self->{conn}->status : "not connected";
+}
+
+# メッセージを送信可能な状態かどうか
+sub is_ready{
+	my $self = shift;
+	return( not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready );
 }
 
 sub config{
@@ -128,9 +134,14 @@ sub on_timer{
 			# fall thru. そのまま作り直す
 		}else{
 			$self->_start_user_list();
-			$self->_flush_cue();
 			
-			
+			# チャンネルごとのキューをチェックする
+			if( $self->{conn} and $self->{conn}->is_ready ){
+				while( my($channel_id,$tx_channel) = each %{$self->{tx_channel}} ){
+					$self->_flush_cue($channel_id,$tx_channel);
+				}
+			}
+
 			# 再接続は必要ない
 			return;
 		}
@@ -146,7 +157,9 @@ sub on_timer{
 	$self->{config} or return $self->{logger}->e( "missing connection configuration" );
 	
 	$self->{user_map} = {};
+	$self->{tx_channel} = {};
 	$self->{logger}->i("connection start..");
+	
 
 	$self->{conn} = SlackConnection->new(
 		token => $self->{config}{api_token},
@@ -157,8 +170,6 @@ sub on_timer{
 	$self->{conn}->on(
 		# ignore some events
 		[
-			$SlackConnection::EVENT_REPLY_TO, #送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
-
 			'accounts_changed event', # 公式Webクライアントがユーザのログインアカウントのリストを更新するのに使われる。他のクライアントはこのイベントを無視するべき
 			'reconnect_url', # The reconnect_url event is currently unsupported and experimental.
 			'presence_change', # このボットはユーザのアクティブ状態に興味がない
@@ -185,6 +196,7 @@ sub on_timer{
 			$self->{logger}->i("connection finished.");
 			$self->{conn}->dispose;
 			undef $self->{conn};
+			
 		},
 
 		$SlackConnection::EVENT_ERROR => sub {
@@ -258,6 +270,24 @@ sub on_timer{
 					$message->{channel} = $old_channel if not $message->{channel};
 					$message->{subtype}='' if not defined $message->{subtype};
 				}
+				
+				my $user = ($message->{user} || '?');
+				
+				# たまに起動直後に過去の自分の発言を拾ってしまう
+				# 自分の発言はリレーしないようにする
+				# また、自分によるメッセージ編集ではリレーしたくないしlast_messageリセットもしたくない
+				if( defined $self->{bot_id} and $self->{bot_id} eq ($message->{user} || '?') ){
+					return $self->{logger}->d("ignore message from me.");
+				}
+
+				# Slackからのメッセージに割り込まれたら、送信メッセージのマージはやめる
+				if( $message->{channel} ){
+					my $tx_channel = $self->{tx_channel}{$message->{channel}};
+					if( $tx_channel ){
+						$tx_channel->{last_message} = undef;
+						$self->{logger}->d("last_message reset.");
+					}
+				}
 
 				if( not $message->{user} ){
 					# dropboxのリンクなどを貼ると出て来る邪魔なメッセージを除去する
@@ -267,9 +297,6 @@ sub on_timer{
 					$message->{user}='?';
 				}
 
-				# たまに起動直後に過去の自分の発言を拾ってしまう
-				# 自分の発言はリレーしないようにする
-				return if defined $self->{bot_id} and $self->{bot_id} eq $message->{user};
 
 				# 発言者のIDと名前を調べる
 				my $member;
@@ -348,13 +375,36 @@ sub on_timer{
 #				}
 			};
 			$@ and $self->{logger}->e("message handling failed. $@");
-		}
+		},
+		
+		#送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
+		$SlackConnection::EVENT_REPLY_TO => sub{
+			my($conn, $event_type, $reply) = @_;
+			$self->{logger}->d("EVENT_REPLY_TO: %s",dump($reply) );
+			my $count_sending = 0;
+			while( my($channel_id,$tx_channel) = each %{ $self->{tx_channel}} ){
+				my $message = $tx_channel->{sending_message};
+				next if not $message;
+				if( $message->{_sending_id} ne $reply->{reply_to} ){
+					++$count_sending;
+					next;
+				}
+				$message->{ok} =  $reply->{ok};
+				$message->{reply_to} =  $reply->{reply_to};
+				$message->{text} = $reply->{text};
+				$message->{ts} =  $reply->{ts};
+
+				undef $tx_channel->{sending_message};
+				$tx_channel->{last_message} = $message;
+				$self->_flush_cue($channel_id,$tx_channel);
+			}
+			$count_sending > 0 and $self->{logger}->d("count_sending=$count_sending\n");
+		},
 	);
 	$self->{conn}->start;
 }
 
-my @duplicate_check;
-
+# Slackからのメッセージをチャンネルごとにフィルタしてから上流へリレー
 sub _filter_and_relay {
 	my($self,$channel_id,$msg)=@_;
 	
@@ -423,41 +473,116 @@ sub find_channel_by_name{
 	return $self->{channel_map_name}{ $name };
 }
 
+##################################################
+# リレー送信
+
+
 # onTimerから定期的に呼ばれる。たまにキューに入ったメッセージを出力する
+# チャンネルごとのキューをチェックする
 sub _flush_cue{
-	my $self = shift;
+	my($self,$channel_id,$tx_channel)=@_;
 
-	return if not $self->{conn} or not $self->{conn}->is_ready;
+	return if not $channel_id;
+
+	my $cue = $tx_channel->{cue};
 	
-	while( my($channel_id,$cue) = each %{$self->{tx_cue}} ){
-
-		next if not @$cue or not $channel_id;
-
-		my $delta = time - $self->{tx_cue_oldest_time}{$channel_id};
-		next if $delta < 15;
-		
-		my $msg = join "\n",@$cue;
-		@$cue = ();
-
-		eval{
-			$self->{conn}->send(
-				{
-					type => 'message'
-					,channel => $channel_id
-					,text => $msg
-				#	,mrkdwn => JSON::false
-				}
-			);
-		};
-		$@ and $self->{logger}->w("send failed. %s",$@);
+	# キューがカラ
+	return if not @$cue;
+	
+	# 何かメッセージを送信中
+	if( $tx_channel->{sending_message} ){
+		return $self->{logger}->v("waiting sending result. %s",dump($tx_channel->{sending_message}));
 	}
+
+	# 前回送信してから5秒間は送信しない
+	my $now = time;
+	return if $now - $tx_channel->{last_sending} < 3;
+
+	# 許可されているなら既存メッセージの更新を試みる
+	if( $self->{config}{merge_message} ){
+		my $last_message = $tx_channel->{last_message};
+		if( $last_message ){
+			my $delta = $now - $last_message->{ts};
+			if( $delta < 300 ){
+				my $msg = $self->decode_message( $last_message->{text} );
+				my $count_line = 0;
+				while(@$cue){
+					my $cue_line = $cue->[0];
+					last if length($msg) + length($cue_line) +1 >= 2048;
+					$msg .= "\x0a" . $cue_line;
+					shift @$cue;
+					++ $count_line;
+				}
+				if( $count_line ){
+					eval{
+						my $msg_obj = {
+							ts => $last_message->{ts}
+							,channel => $channel_id
+							,text => $msg
+						};
+						$tx_channel->{sending_message} = $msg_obj;
+						$tx_channel->{last_sending} = $now;
+						$self->{logger}->d("update_message: %s",dump($msg_obj) );
+						$self->{conn}->update_message( 
+							$msg_obj 
+							,sub{
+								$self->{logger}->e("update_message failed. error=%s",@_);
+								$tx_channel->{sending_message} = undef;
+								$self->_flush_cue($channel_id,$tx_channel);
+							}
+							,sub{
+								my($data)=@_;
+								eval{
+									if( not $data->{ok} ){
+										$self->{logger}->d("update_message result. %s",dump($data));
+										$self->{logger}->d("update_message failed. error=%s",$data->{error} );
+										$tx_channel->{last_message} = undef;
+									}else{
+										my $last_message = $tx_channel->{last_message};
+										$last_message and $last_message->{text} = $data->{text};
+									}
+								};
+								$@ and $self->{logger}->e("update_message result handling error. %s",$@);
+								$tx_channel->{sending_message} = undef;
+								$self->_flush_cue($channel_id,$tx_channel);
+							} 
+						);
+					};
+					$@ and $self->{logger}->e("update_message failed. %s",$@);
+					return;
+				}
+			}
+		}
+	}
+
+	if( not $self->{config}{merge_message} ){
+		# キュー中の一番古いメッセージの時刻が15秒以内である
+		my $delta = time - $tx_channel->{cue_oldest_time};
+		return if $delta < 15;
+	}
+
+	# キュー中のメッセージを束ねる
+	my $msg = join "\n",@$cue;
+	@$cue = ();
+
+	# 送信する
+	eval{
+		my $msg_obj = 	{
+				type => 'message'
+				,channel => $channel_id
+				,text => $msg
+			#	,mrkdwn => JSON::false
+			};
+		$tx_channel->{last_sending} = $now;
+		$tx_channel->{sending_message} = $msg_obj;
+		$msg_obj->{_sending_id} = $self->{conn}->send( $msg_obj );
+		$self->{logger}->d("sending_message: %s",dump($msg_obj) );
+	};
+	$@ and $self->{logger}->w("send failed. %s",$@);
 }
 
-# メッセージを送信可能な状態かどうか
-sub is_ready{
-	my $self = shift;
-	return( not $self->{is_disposed} and $self->{conn} and $self->{conn}->is_ready );
-}
+
+
 
 # slackのチャンネルにメッセージを送る
 # $msg はUTF8フラグつきの文字列
@@ -466,12 +591,19 @@ sub send_message{
 
 	return if $self->{is_disposed};
 	
-	my $cue = $self->{tx_cue}{$channel_id};
-	$cue or $cue = $self->{tx_cue}{$channel_id} = [];
+	my $tx_channel = $self->{tx_channel}{$channel_id};
+	$tx_channel or $tx_channel = $self->{tx_channel}{$channel_id} = {
+		cue => [],
+		last_sending => 0,
+	};
+	my $cue = $tx_channel->{cue};
 
-	@$cue or $self->{tx_cue_oldest_time}{$channel_id} = time;
+	@$cue or $tx_channel->{cue_oldest_time} = time;
 
 	push @$cue,SlackUtil::encode_entity($msg);
+	if( $self->{conn} and $self->{conn}->is_ready ){
+		$self->_flush_cue($channel_id,$tx_channel);
+	}
 }
 
 

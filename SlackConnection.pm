@@ -10,10 +10,12 @@ use JSON;
 use AnyEvent;
 use AnyEvent::WebSocket::Client 0.12;
 use AnyEvent::HTTP;
+use URI::Escape;
 
 my $URL_RTM_START = 'https://slack.com/api/rtm.start';
 my $URL_CHANNEL_LIST = "https://slack.com/api/channels.list";
 my $URL_USER_LIST = "https://slack.com/api/users.list";
+my $URL_CHAT_UPDATE = 'https://slack.com/api/chat.update';
 
 sub new {
 	my $class = shift;
@@ -317,16 +319,17 @@ sub _call_list_api{
 	}
 	, sub {
 		my($data,$headers)=@_;
-		
-		$data or return $cb_error->("HTTP error. $headers->{Status}, #headers->{Reason}");
+		eval{
+			$data or return $cb_error->("HTTP error. $headers->{Status}, #headers->{Reason}");
 
-		my $json = eval{ decode_json($data)};
-		$@ and return $cb_error->( "JSON parse error. $@");
+			my $json = eval{ decode_json($data)};
+			$@ and return $cb_error->( "JSON parse error. $@");
 
-		$json->{ok} or return $cb_error->( "API returns error. $json->{error}");
-		
-		$self->_update_info( $key,$json->{$key2} ,$event_type );
-
+			$json->{ok} or return $cb_error->( "API returns error. $json->{error}");
+			
+			$self->_update_info( $key,$json->{$key2} ,$event_type );
+		};
+		$@ and warn "_call_list_api error=$@\n";
 	};
 }
 
@@ -338,6 +341,34 @@ sub get_user_list{
 sub get_channel_list{
 	my($self,$cb_error)=@_;
 	$self->_call_list_api($URL_CHANNEL_LIST,'channels','channels',$EVENT_CHANNELS,$cb_error);
+}
+
+# メッセージの更新。パラメータは https://api.slack.com/methods/chat.update を参照
+sub update_message{
+	my($self,$params,$cb_error,$cb_result)=@_;
+
+	my $body = "token=$self->{token}&". join('&',map{ uri_escape_utf8($_) ."=".uri_escape_utf8($params->{$_}) } keys %$params );
+
+	http_post
+		$URL_CHAT_UPDATE
+		,$body
+		, headers => {
+			'User-Agent',$self->{user_agent},
+			'Content-Type',"application/x-www-form-urlencoded",
+		}
+		, sub {
+			my($data,$headers)=@_;
+			eval{
+				$data or return $cb_error->("HTTP error. $headers->{Status}, #headers->{Reason}");
+
+				my $json = eval{ decode_json($data)};
+				$@ and return $cb_error->( "JSON parse error. $@");
+				
+				$cb_result->($json);
+			};
+			$@ and warn "update_message error=$@\n";
+
+		};
 }
 
 #######################################################
