@@ -275,9 +275,10 @@ sub on_timer{
 				
 				# たまに起動直後に過去の自分の発言を拾ってしまう
 				# 自分の発言はリレーしないようにする
-				# また、自分によるメッセージ編集ではリレーしたくないしlast_messageリセットもしたくない
+				# また、自分によるメッセージ編集の結果を受信してしまうことがある。この場合は何もせずに無視したい
 				if( defined $self->{bot_id} and $self->{bot_id} eq ($message->{user} || '?') ){
-					return $self->{logger}->d("ignore message from me.");
+					## return $self->{logger}->d("ignore message from me.");
+					return;
 				}
 
 				# Slackからのメッセージに割り込まれたら、送信メッセージのマージはやめる
@@ -380,7 +381,7 @@ sub on_timer{
 		#送信した発言のtsが確定した。発言をまとめるのに使えそうだが…
 		$SlackConnection::EVENT_REPLY_TO => sub{
 			my($conn, $event_type, $reply) = @_;
-			$self->{logger}->d("EVENT_REPLY_TO: %s",dump($reply) );
+			## $self->{logger}->d("EVENT_REPLY_TO: %s",dump($reply) );
 			my $count_sending = 0;
 			while( my($channel_id,$tx_channel) = each %{ $self->{tx_channel}} ){
 				my $message = $tx_channel->{sending_message};
@@ -504,7 +505,8 @@ sub _flush_cue{
 		if( $last_message ){
 			my $delta = $now - $last_message->{ts};
 			if( $delta < 300 ){
-				my $msg = $self->decode_message( $last_message->{text} );
+				## $self->{logger}->d("last message: %s",$last_message->{text} );
+				my $msg = $self->decode_message( $last_message->{text} ,1);
 				my $count_line = 0;
 				while(@$cue){
 					my $cue_line = $cue->[0];
@@ -522,7 +524,7 @@ sub _flush_cue{
 						};
 						$tx_channel->{sending_message} = $msg_obj;
 						$tx_channel->{last_sending} = $now;
-						$self->{logger}->d("update_message: %s",dump($msg_obj) );
+						## $self->{logger}->d("update_message: %s",dump($msg_obj) );
 						$self->{conn}->update_message( 
 							$msg_obj 
 							,sub{
@@ -576,7 +578,7 @@ sub _flush_cue{
 		$tx_channel->{last_sending} = $now;
 		$tx_channel->{sending_message} = $msg_obj;
 		$msg_obj->{_sending_id} = $self->{conn}->send( $msg_obj );
-		$self->{logger}->d("sending_message: %s",dump($msg_obj) );
+		## $self->{logger}->d("sending_message: %s",dump($msg_obj) );
 	};
 	$@ and $self->{logger}->w("send failed. %s",$@);
 }
@@ -600,6 +602,10 @@ sub send_message{
 
 	@$cue or $tx_channel->{cue_oldest_time} = time;
 
+
+
+	$msg = avoid_url_renamer($msg);
+
 	push @$cue,SlackUtil::encode_entity($msg);
 	if( $self->{conn} and $self->{conn}->is_ready ){
 		$self->_flush_cue($channel_id,$tx_channel);
@@ -608,7 +614,7 @@ sub send_message{
 
 
 sub decode_message{
-	my($self,$src) = @_;
+	my($self,$src,$suppress_url_error) = @_;
 	
 	my $after = "";
 	my $start = 0;
@@ -631,7 +637,13 @@ sub decode_message{
 			$after .= SlackUtil::decode_entity( $channel ? '#'.$channel->{name} : $link );
 		}elsif( $link =~ /([^\|]*)\|(.*)/ ){
 			# <url|caption>
-			$after .= SlackUtil::decode_entity( $2 ) ." ".SlackUtil::decode_entity( $1 );
+			if( $suppress_url_error ){
+				# ボットが出したメッセージの編集の時はここを通る
+				$after .= SlackUtil::decode_entity( $1 );
+			}else{
+				# Slack->IRCのリレーの時はここを通る
+				$after .= SlackUtil::decode_entity( $2 ) ." ".SlackUtil::decode_entity( $1 );
+			}
 		}else{
 			# <url>
 			$after .= SlackUtil::decode_entity( $link );
@@ -642,7 +654,33 @@ sub decode_message{
 	return $after;
 }
 
-
+sub avoid_url_renamer{
+	my($in)=@_;
+	
+	my $out = '';
+	my $last_end = 0;
+	while( $in =~ /(\A|\s)(\w+:\/\/)?([^\sA-Z0-9\.-]+?)([A-Z0-9\.-]*\.[A-Z0-9]+)/ig ){
+		my $start = $-[0];
+		my $end = $+[0];
+		if($start > $last_end ){
+			$out .= substr( $in, $last_end, $start - $last_end );
+		}
+		my($head,$schema,$domain1,$domain2)=map {$_//''} ($1,$2,$3,$4);
+		warn "0=$head,1=$schema,2=$domain1,3=$domain2\n";
+		if( length($schema) <= 1 ){
+			# http:// がないので妙な展開をさせたくない
+			$out .= "$head$schema$domain1 $domain2";
+		}else{
+			# http:// があるので妙な展開も仕方がない？
+			$out .= "$head$schema$domain1$domain2";
+		}
+		$last_end = $end;
+	}
+	if(length($in) > $last_end ){
+		$out .= substr( $in, $last_end, length($in) - $last_end );
+	}
+	
+}
 
 1;
 __END__
