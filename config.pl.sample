@@ -158,38 +158,49 @@ my $dummy_value = {
 			# Disable this relay. 0(default):not disable, 1:disable
 			disabled => 0,
 
-			# Name of slack connection
-			slack_conn => 'slack1',
+			# list of roomSpecs for inputs.
+			in=>[
+				[qw( irc irc1 #irc-channel1)],
+			],
 
-			# Name of slack channel
-			slack_channel => '#slack-channel1',
+			# list of roomSpecs for outputs.
+			out=>[
+				# type connName roomName
+				[qw( slack slack1 #slack-channel1)],
+			],
 
-			# Name of IRC connection
-			irc_conn => 'irc1',
+			# list of roomSpecs for both of inputs and outputs.
+			inout=>[
+				# type connName roomName
+				[qw( slack slack2 #slack-channel2)],
+				# type connName roomName
+				[qw( irc irc2 #irc-channel2)],
 
-			# Name of IRC channel
-			irc_channel => '#irc-channel1',
+				# type connName roomId
+				[qw(matrix matrix1 !xQyixSzpkrbjaexNlL:matrix.fedibird.com)],
+			],
 
-			# Enable/Disable relay Slack to IRC. 0(default):off, 1:on
-			slack_to_irc => 1,
-
-			# Enable/Disable relay IRC to Slack. 0(default):off, 1:on
-			irc_to_slack => 1,
-
-			# Don't relay incoming IRC NOTICE message. 0(default):off, 1:on
+			# (IRC) (input) Don't relay incoming IRC NOTICE message. 0(default):off, 1:on
 			dont_relay_notice =>0,
 			
-			# use NOTICE for message that outgoing to IRC. 0(default):off, 1:on
+			# (IRC) (output) use NOTICE for message that outgoing to IRC. 0(default):off, 1:on
 			use_notice =>0,
 		},
 
 		{
-			slack_conn => 'slack2',
-			slack_channel => '#slack-channel2',
-			irc_conn => 'irc2',
-			irc_channel => '#irc-channel2',
-			slack_to_irc => 1,
-			irc_to_slack => 1,
+			# list of roomSpecs for both of inputs and outputs.
+			inout=>[
+				# type connName roomName
+				[qw( slack slack2 #slack-channel2)],
+				# type connName roomName
+				[qw( irc irc2 #irc-channel2)],
+
+				# type connName roomId
+				[qw(matrix matrix1 !xQyixSzpkrbjaexNlL:matrix.fedibird.com)],
+			],
+
+			# if true, don't use this relay rule.
+			disabled => 1,
 		},
 	],
 };
