@@ -1,4 +1,4 @@
-# perl-irc-slack-relay-bot
+# lilil (旧名 perl-irc-slack-relay-bot)
 SlackとIRCのチャンネル間でメッセージをリレーするbot。Perlで書きました
 
 # 挙動のクセなど
@@ -34,7 +34,7 @@ SlackとIRCのチャンネル間でメッセージをリレーするbot。Perl�
 `emacs config.pl`
 
 スクリプトに実行権限を付与します
-`chmod +x ./start ./hup IRCSlackBot.pl`
+`chmod +x ./start ./hup lilil.pl`
 
 起動コマンドを実行します
 `./start`
