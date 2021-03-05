@@ -54,6 +54,25 @@ my $dummy_value = {
 		},
 	],
 
+	# matrix account list.
+	matrix_connections => [
+		{
+			name => "matrix1",
+			disabled => 0,
+
+			userAgent => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.72 Safari/537.36",
+
+			serverPrefix => "https://matrix.fedibird.com/_matrix/client/r0",
+
+			# if you have token, we can skip login.
+			token =>"xxxxxxxx",
+
+			# else we have to use login API.
+			user => "xxxxxx",
+			password => "xxxxxx",
+		},
+	],
+
 	# IRC bot list
 	irc_connections => [
 		{
