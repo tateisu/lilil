@@ -1,3 +1,4 @@
 config.pl
 stdout.log
 stderr.log
+bot.pid

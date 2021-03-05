@@ -194,7 +194,11 @@ sub on_timer{
 	undef $self->{server_prefix};
 
 	if($self->{config}{is_jis} ){
-		$self->{encode} = sub{ JIS4IRC::fromEUCJP( $eucjp->encode($_[0])); };
+		$self->{encode} = sub{
+			my $a = $_[0];
+			$a =~ tr/\x{FF5E}/\x{301C}/;
+			JIS4IRC::fromEUCJP( $eucjp->encode( $a )); 
+		};
 		$self->{decode} = sub{ $eucjp->decode( JIS4IRC::toEUCJP(  $_[0])); };
 	}else{
 		$self->{encode} = sub{ $utf8->encode($_[0]); };
