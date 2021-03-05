@@ -1,5 +1,5 @@
 # lilil (旧名 perl-irc-slack-relay-bot)
-SlackとIRCのチャンネル間でメッセージをリレーするbot。Perlで書きました
+IRC, Slack, Matrix などのチャットサービス間で、botアカウントを使ってメッセージを相互にリレーします。
 
 # 挙動のクセなど
 - 複数の接続・チャンネルを扱えます
