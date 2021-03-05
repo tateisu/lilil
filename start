@@ -11,4 +11,4 @@ else
 fi
 
 echo "start new process..."
-./IRCSlackBot.pl </dev/null >stdout.log 2>stderr.log &
+./lilil.pl </dev/null >stdout.log 2>stderr.log &

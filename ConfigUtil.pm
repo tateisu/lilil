@@ -22,7 +22,7 @@ sub check_config_keywords{
 			}
 			
 		}elsif( $type eq 'so' ){
-			# 省略OK. 特にチェックすることはない
+			# string,optional
 
 		}elsif( $type eq 'd' ){
 			if( not defined $v or not $v =~ /\A\d+\z/ ){
@@ -30,9 +30,8 @@ sub check_config_keywords{
 				$valid = 0;
 			}
 		}elsif( $type eq 'do' ){
-
 			if( not defined $v or not length $v ){
-				# 省略OK
+				# digits,optional
 			}elsif( not $v =~ /\A\d+\z/ ){
 				$logger->e( "config error: '%s' is optional, or set integer value.",$name );
 				$valid = 0;
@@ -40,7 +39,7 @@ sub check_config_keywords{
 
 		}elsif( $type eq 'a' ){
 			if( not defined $v ){
-				# 自動で補う
+				# supply empty array
 				$config->{$name} = [];
 			}elsif( 'ARRAY' ne reftype $v ){
 				$logger->e( "config warning: '%s' is required. please set array-ref. specified data is %s.",$name,reftype($v) );
@@ -49,14 +48,14 @@ sub check_config_keywords{
 
 		}elsif( $type eq 'ao' ){
 			if( not defined $v ){
-				# 省略OK
+				# array optional
 			}elsif( 'ARRAY' ne reftype $v ){
 				$logger->e( "config warning: '%s' is optional, or set array-ref value, specified data is %s.",$name,reftype($v) );
 				$valid = 0;
 			}
 
 		}elsif( $type eq 'b' ){
-			# boolean required. 省略したらfalse扱い
+			# boolean required.
 		}else{
 			$logger->e( "implementation error: unknown type in config_keywords '$name'" );
 			$valid = 0;

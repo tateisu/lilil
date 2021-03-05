@@ -1,4 +1,5 @@
 config.pl
-stdout.log
-stderr.log
-bot.pid
+deploy.sh
+*.log
+*.pid
+*.txt

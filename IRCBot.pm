@@ -19,7 +19,7 @@ my %config_keywords = ConfigUtil::parse_config_keywords(qw(
 	nick:s
 	user_name:s
 	real_name:s
-	bind_src:s
+	bind_src:so
 	connect_timeout:d
 
 	port:d
