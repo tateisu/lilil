@@ -346,16 +346,9 @@ sub onTimerSend{
     return if not @$queue;
 
     my $token = $self->{token} || $self->{config}{token};
-    my $myselfId = $self->{myselfId} || $self->{config}{myselfId} ;
-
     if(not $token){
         @$queue =();
         return $self->{logger}->e("onTimerSend: missing token.");
-    }
-
-    if(not $myselfId){
-        @$queue =();
-        return $self->{logger}->e("onTimerSend: missing myselfId.");
     }
 
     # キューがたまり過ぎたら古い方を除去する
