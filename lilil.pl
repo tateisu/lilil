@@ -3,6 +3,9 @@ use utf8;
 use strict;
 use warnings;
 
+# perlバージョン
+use v5.22;
+
 # 外部依存関係
 use AnyEvent;
 use Time::HiRes qw(time);

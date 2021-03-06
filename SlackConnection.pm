@@ -1,7 +1,6 @@
 package SlackConnection;
 $SlackConnection::VERSION = '0.161009'; # YYMMDD
 
-use v5.26;
 use strict;
 use warnings;
 

@@ -1,7 +1,6 @@
 package IRCUtil;
 $IRCUtil::VERSION = '0.161004'; # YYMMDD
 
-use v5.26;
 use strict;
 use warnings;
 

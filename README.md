@@ -10,7 +10,7 @@ IRC, Slack, Matrix などのチャットサービス間で、botアカウント�
 # 依存関係
 
 ```
-perl 5.26
+perl 5.22
 
 $ perl -MModule::Version -e 'for(@ARGV){$v=Module::Version::get_version($_);print"$_ $v\n"}' AnyEvent AnyEvent::HTTP AnyEvent::WebSocket::Client Attribute::Constant Data::Dump HTML::Entities JSON::XS LWP::UserAgent URI::Escape
 
