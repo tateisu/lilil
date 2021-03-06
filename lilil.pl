@@ -46,6 +46,10 @@ my %matrix_bot_map;
 # returns error-string or undef.
 sub fanOutIrc {
 	my($relay,$outRoom,$msg)=@_;
+
+	# IRCだけニックネーム区切りを < >に変える
+	# 先頭に (notice) やら (action) やら入るかもしれない
+	$msg =~ s/`([^`]+)`/<$1>/;
 	
 	my $bot = $irc_bot_map{ $outRoom->{connName} };
 	return "fanOutIrc: missing conn '$outRoom->{connName}'" if not $bot;
@@ -63,7 +67,7 @@ sub fanOutIrc {
 # returns error-string or undef.
 sub fanOutMatrix {
 	my($relay,$outRoom,$msg)=@_;
-
+	
 	my $bot = $matrix_bot_map{ $outRoom->{connName} };
 	return "fanOutIrc: missing conn '$outRoom->{connName}'" if not $bot;
 	return "M[$outRoom->{connName}]not ready to relay." if not $bot->is_ready;
@@ -142,6 +146,17 @@ sub cb_slack_relay{
 	});
 }
 
+sub cb_matrix_relay{
+	my($bot, $roomId, $sender, $msg )=@_;
+
+	fanOut("`$sender` $msg",sub{
+		my($relay)=@_;
+		my($inRoom) = grep{ $_->{type} eq "matrix" and $_->{connName} eq $bot->{config}{name} and $_->{roomName} eq $roomId} @{$relay->{inRooms}};
+		return "can't find roomSpec from inRooms. matrix,$bot->{config}{name},$roomId" if not $inRoom;
+		return $inRoom;
+	});
+}
+
 sub cb_irc_relay{
 	my($bot, $from_nick,$command,$channel_raw, $channel, $msg )=@_;
 
@@ -154,30 +169,15 @@ sub cb_irc_relay{
 		$is_action = 1;
 	}
 
-	if( $is_notice ){
-		$msg ="[$from_nick] $msg";
-	}else{
-		$msg = "<$from_nick> $msg";
-	}
-
+	$msg = "`$from_nick` $msg";
 	$msg = "(action) $msg" if $is_action;
+	$msg = "(notice) $msg" if $is_notice;
 
 	fanOut($msg,sub{
 		my($relay)=@_;
 		my($inRoom) = grep{ $_->{type} eq "irc" and $_->{connName} eq $bot->{config}{name} and $_->{irc_channel_lc} eq $channel_lc} @{$relay->{inRooms}};
 		return "can't find roomSpec from inRooms. irc,$bot->{config}{name},$channel_lc" if not $inRoom;
 		return "NOTICEをリレーしない設定なので無視します" if $is_notice and $relay->{dont_relay_notice};
-		return $inRoom;
-	});
-}
-
-sub cb_matrix_relay{
-	my($bot, $roomId, $sender, $msg )=@_;
-
-	fanOut("<$sender>$msg",sub{
-		my($relay)=@_;
-		my($inRoom) = grep{ $_->{type} eq "matrix" and $_->{connName} eq $bot->{config}{name} and $_->{roomName} eq $roomId} @{$relay->{inRooms}};
-		return "can't find roomSpec from inRooms. matrix,$bot->{config}{name},$roomId" if not $inRoom;
 		return $inRoom;
 	});
 }

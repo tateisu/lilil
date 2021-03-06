@@ -366,7 +366,7 @@ sub on_timer{
 					my @lines = split /[\x0d\x0a]+/,$self->decode_message($msg);
 					for my $line (@lines){
 						next if not ( defined $msg and length $msg ) ;
-						$self->_filter_and_relay( $message->{channel},"<$from> $line");
+						$self->_filter_and_relay( $message->{channel},"`$from` $line");
 					}
 				}
 #				if( $message->{attachments} ){

@@ -10,6 +10,7 @@ use AnyEvent::HTTP;
 use JSON::XS;
 use URI::Escape;
 use utf8;
+use HTML::Entities;
 
 use ConfigUtil;
 
@@ -353,16 +354,34 @@ sub parseMessageOne{
     return undef;
 }
 
+sub encodeHtml($){
+    return encode_entities($_[0], '<>&"');
+}
+
 sub send{
     my($self,$roomId,$msg)=@_;
 
     my $token = $self->{token} || $self->{config}{token};
     $token or return $self->{logger}->e("send: missing token.");
 
+    # 名前部分をマークアップしたい
+
+    my $formattedBody = $msg;
+    if( not $formattedBody =~ s|\A(.*)`([^`]+)`(\s*)(.*)|encodeHtml($1)."<b>".encodeHtml($2)."</b>".$3.encodeHtml($4)|e ){
+        $formattedBody = encodeHtml($formattedBody)
+    }
+
+    my $params = {
+        msgtype=>"m.text", 
+        body=>$msg,
+        format =>"org.matrix.custom.html",
+        formatted_body => $formattedBody,
+    };
+
     my $url = "$self->{config}{serverPrefix}/rooms/".uri_escape($roomId)."/send/m.room.message?".encodeQuery({access_token=>$token});
     $self->showUrl("POST",$url);
     http_post $url
-        , encode_json({msgtype=>"m.text", body=>$msg})
+        , encode_json($params)
         , headers => { 'User-Agent',$self->{config}{userAgent} }
         , sub {
             my($data,$headers)=@_;
