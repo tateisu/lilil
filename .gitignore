@@ -1,5 +1,7 @@
 config.pl
 deploy.sh
+hup
+start
 *.log
 *.pid
 *.txt
