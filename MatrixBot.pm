@@ -415,6 +415,10 @@ sub onTimerSend{
 
 sub send{
     my($self,$roomId,$msg)=@_;
+
+    # Matrixは全角空白をURLの一部として扱ってしまう
+    $msg =~ s/　/ /g;
+
     my $queue = $self->{sendQueue};
     push @$queue,[$roomId,$msg];
     $self->onTimerSend();
