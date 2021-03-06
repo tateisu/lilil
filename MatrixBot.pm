@@ -15,29 +15,27 @@ use HTML::Entities;
 use ConfigUtil;
 
 my %config_keywords = ConfigUtil::parse_config_keywords(qw(
-    disabled:b
+
     name:s
+    disabled:b
+
     serverPrefix:s
+    mediaPrefix:s
+    userAgent:s
+
+    token:so
     user:so
     password:so
-    token:so
-    userAgent:s
-    mediaPrefix:so
 ));
 
 sub check_config{
     my($params,$logger)=@_;
     my $valid = ConfigUtil::check_config_keywords(\%config_keywords,@_);
+
     if($valid){
-        if(not $params->{token}){
-            if( not $params->{user} ){
-                $logger->e( "config error: missing both of 'token' and 'user'.");
-				$valid = 0;
-            }
-            if( not $params->{password} ){
-                $logger->e( "config error: missing both of 'token' and 'password'.");
-				$valid = 0;
-            }
+        if(not $params->{token} && !($params->{user} and $params->{password}) ){
+            $logger->e( "config error: connection required 'token', or pair of 'user','password'.");
+            $valid = 0;
         }
     }
 
@@ -46,7 +44,6 @@ sub check_config{
 
 ###########################################################
 
-my $eucjp = Encode::find_encoding("EUC-JP");
 my $utf8 = Encode::find_encoding("utf8");
 
 sub new {
@@ -260,10 +257,10 @@ sub on_timer{
             my $sv = $root->{next_batch};
             if($sv){
                 $self->{nextBatch} = $sv;
-                $self->{logger}->d("nextBatch=%s",$self->{nextBatch});
             }else{
                 $self->{logger}->w("missing nextBatch. %s",$self->{lastJson});
             }
+
             $self->parseMessages($root);
             $self->on_timer;
         };
@@ -271,27 +268,14 @@ sub on_timer{
 
 sub parseMessages{
     my($self,$root)=@_;
-
-    my $joinRooms = $root->{rooms}{join};
-    if(not $joinRooms){
-        $self->{logger}->e("parseMessages: missing joinRooms.");
-        return
-    }
-
-    my $nMessage =0;
+    my $joinRooms = $root->{rooms}{join} or return;
     while(my($roomId,$room)=each %$joinRooms ){
-        my $events = $room->{timeline}{events};
-        if(not $events){
-            $self->{logger}->e("parseMessages: room=%s, missing timeline events.",$roomId);
-            next;
-        }
+        my $events = $room->{timeline}{events} or next;
         for my $event (@$events){
-            ++$nMessage;
             my $error = $self->parseMessageOne($roomId,$event);
             $self->{logger}->w("parseMessages:%s",$error) if $error;
         }    
     }
-    $self->{logger}->d(  "read %s messages.",$nMessage );
 }
 
 sub parseMessageOne{
