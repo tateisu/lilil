@@ -1,9 +1,7 @@
 #!/usr/bin/perl --
 use strict;
 use warnings;
-
 use AnyEvent;
-use AnyEvent::WebSocket::Client 0.12;
 use AnyEvent::HTTP;
 use Data::Dump;
 

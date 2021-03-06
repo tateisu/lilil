@@ -1,17 +1,17 @@
 package JIS4IRC;
 
-# x201��JIS���Ѵ�����ݤΥ⡼�ɻ���
+# x201をJISに変換する際のモード指定
 $x201_mode ="I7";
-	# �ǽ��1ʸ����I�ޤ���J��ESC (J �ޤ��� ESC (I ���ڤ��ؤ���
-	# 2ʸ���ܤ� 8��7��S �� 8��8bit�ǽ��Ϥ���7��&0x7f���롣 S��&0x7f��������������� \x0e,\x0f���ɲä��롣
+	# 最初の1文字はIまたはJ。ESC (J または ESC (I の切り替え。
+	# 2文字目は 8か7かS 。 8は8bitで出力し、7は&0x7fする。 Sは&0x7fしたうえで前後に \x0e,\x0fを追加する。
 
-# iso-2022-jp-3 �� 0208�Ȥθߴ����λ���
+# iso-2022-jp-3 の 0208との互換性の指定
 $iso2022jp3_mode =2;
-	# 0=iso-2022-jp-3-compatible(����208)
-	# 1=iso-2022-jp-3           (����213��1��)
-	# 2=iso-2022-jp-3-auto      (x0208�ˤ���ʸ����x0208,¾��213��1��)
+	# 0=iso-2022-jp-3-compatible(全て208)
+	# 1=iso-2022-jp-3           (全て213の1面)
+	# 2=iso-2022-jp-3-auto      (x0208にある文字はx0208,他は213の1面)
 
-# ISO-2022-JP �Υ��������ץ�������
+# ISO-2022-JP のエスケープシーケンス
 %escape2022 =(
 	0   =>"\x1b\x28\x42",
 	208 =>"\x1b\x24\x42",
@@ -20,11 +20,11 @@ $iso2022jp3_mode =2;
 	2132=>"\x1b\x24\x28\x50",
 );
 
-# x0208 ��¸�ߤ���ʸ��
-# ����94�Ĥ����ƻ��Ѥ���Ƥ����
+# x0208 に存在する文字
+# 点の94個が全て使用されている区
 $x208all = '!0123456789:;<=>?@ABCDEFGHIJKLMNPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrs';
 
-# ���ΰ��������Ѥ���Ƥ����
+# 点の一部が使用されている区
 %x208=(
 	'"'=>'!"#$%&\'()*+,-.:;<=>?@AJKLMNOP\\]^_`abcdefghijrstuvwxy~',
 	'#'=>'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
@@ -55,7 +55,7 @@ sub toEUCJP{
 	my $src_len = length $src;
 	my @result;
 	LOOP: for(my $i = 0;$i<$src_len;){
-		# ESC ���о줹��ޤǤ���ʬ
+		# ESC が登場するまでの部分
 		my $start = $i;
 		$i = index $src,"\x1b",$i;
 		$i == -1 and $i = $src_len;
@@ -68,7 +68,7 @@ sub toEUCJP{
 		my $page = 0;
 		for(;$i<$src_len;++$i){
 			my $c = ord(substr($src,$i,1));
-			# ����ʤ�ɬ��ASCII���᤹
+			# 空白なら必ずASCIIに戻す
 			$c==0x20 and next LOOP;
 			if($c==0x0E){ # shift out
 				if($page==72010 ){ $page=72011; next; }
@@ -87,20 +87,20 @@ sub toEUCJP{
 					my $c1 = substr($src,$i+1,1);
 					my $c2 = substr($src,$i+2,1);
 					if($c1 eq '('){
-						if($c2 eq 'B'){$page=    0;$i+=2; next;}	# ASCII ESC (B ��������
-						if($c2 eq 'I'){$page=72010;$i+=2; next;}	# JIS X 0201 �Ҳ�̾ 7�ӥå�Ⱦ�ѥ��ʤγ���
-						if($c2 eq 'J'){$page=82010;$i+=2; next;}	# JIS X0201(LH) ESC (J Ⱦ�ѥ���
+						if($c2 eq 'B'){$page=    0;$i+=2; next;}	# ASCII ESC (B アスキー
+						if($c2 eq 'I'){$page=72010;$i+=2; next;}	# JIS X 0201 片仮名 7ビット半角カナの開始
+						if($c2 eq 'J'){$page=82010;$i+=2; next;}	# JIS X0201(LH) ESC (J 半角カナ
 
 					}elsif($c1 eq '$'){
-						if($c2 eq '@'){$page=2131; $i+=2; next;}	# ESC $@ JIS X 0213��1��(include JIS X0208('78)) 
+						if($c2 eq '@'){$page=2131; $i+=2; next;}	# ESC $@ JIS X 0213の1面(include JIS X0208('78)) 
 						if($c2 eq 'B'){$page= 208; $i+=2; next;}	# JIS X0208('83) 
-						if($c2 eq 'I'){$page= 201; $i+=2; next;}	# 8�ӥå�Ⱦ�ѥ��ʤγ���
+						if($c2 eq 'I'){$page= 201; $i+=2; next;}	# 8ビット半角カナの開始
 						if($c2 eq '(' and $i<$maxescape){
 							$elen = 4;
 							my $c3 = substr($src,$i+3,1);
-							if($c3 eq 'O'){$page=2131; $i+=3; next;}	# JIS X 0213��1��(include JIS X0212?)
-							if($c3 eq 'P'){$page=2132; $i+=3; next;}	# JIS X 0213��2��
-							if($c3 eq 'D'){$page=212;  $i+=3; next;}	# JIS X 0212 �������
+							if($c3 eq 'O'){$page=2131; $i+=3; next;}	# JIS X 0213の1面(include JIS X0212?)
+							if($c3 eq 'P'){$page=2132; $i+=3; next;}	# JIS X 0213の2面
+							if($c3 eq 'D'){$page=212;  $i+=3; next;}	# JIS X 0212 補助漢字
 						}
 					}
 				}
@@ -168,7 +168,7 @@ sub fromEUCJP{
 			my $c2 =ord(substr($src,++$i,1))&0x7f;
 			$bytes = pack("CC",$code,$c2);
 
-			# iso-2022-jp-3 ��ʸ����ϸߴ�������䤳����
+			# iso-2022-jp-3 の文字種は互換性がややこしい
 			$newmode = $iso2022jp3_mode==0?208:2131;
 			if($iso2022jp3_mode==2){
 				my $ku = chr($code);
@@ -205,7 +205,7 @@ sub fromEUCJP{
 	return join '',@result;
 }
 
-# references��
+# references：
 # http://www.asahi-net.or.jp/~wq6k-yn/code/enc-x0213.html
 # http://www2d.biglobe.ne.jp/~msyk/charcode/jisx0201kana/
 # http://www.m17n.org/m17n2000_all_but_registration/proceedings/kawabata/jisx0213.html

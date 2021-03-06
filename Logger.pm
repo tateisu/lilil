@@ -1,4 +1,6 @@
 package Logger;
+
+use v5.26;
 use strict;
 use warnings;
 use utf8;

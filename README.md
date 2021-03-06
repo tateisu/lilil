@@ -8,21 +8,27 @@ IRC, Slack, Matrix などのチャットサービス間で、botアカウント�
 - Slackからのメッセージの取得にはWebSocketのRTM APIを使っています。一部のプロキシ下など、WebSocketが使えない環境では動作しません。
 
 # 依存関係
-- AnyEvent
-- AnyEvent::Socket
-- AnyEvent::Handle
-- AnyEvent::HTTP
-- AnyEvent::WebSocket::Client
-- Scalar::Util
-- Encode
-- JSON
-- Data::Dump
-- Time::HiRes
-- Attribute::Constant
 
-# 使い方
+```
+perl 5.26
 
-事前に、SlackのWebサイトでbotを作成してアクセストークン、ボット名、参加させたいチャンネルをメモしておきます
+$ perl -MModule::Version -e 'for(@ARGV){$v=Module::Version::get_version($_);print"$_ $v\n"}' AnyEvent AnyEvent::HTTP AnyEvent::WebSocket::Client Attribute::Constant Data::Dump HTML::Entities JSON::XS LWP::UserAgent URI::Escape
+
+AnyEvent 7.14
+AnyEvent::HTTP 2.23
+AnyEvent::WebSocket::Client 0.53
+Attribute::Constant 1.01
+Data::Dump 1.23
+HTML::Entities 3.69
+JSON::XS 3.04
+LWP::UserAgent 6.31
+URI::Escape 3.31
+```
+
+### 使い方
+
+事前にSlackのWebサイトでbotを作成してアクセストークン、ボット名、参加させたいチャンネルをメモしておきます。
+事前にMatrixでbot用のアカウントを作成して以下略。
 
 設定サンプルをコピー
 `cp config.pl.sample config.pl `

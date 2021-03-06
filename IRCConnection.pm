@@ -1,7 +1,7 @@
 package IRCConnection;
 $IRCConnection::VERSION = '0.161009'; # YYMMDD
 
-use v5.14;
+use v5.26;
 use strict;
 use warnings;
 

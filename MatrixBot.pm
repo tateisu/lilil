@@ -1,15 +1,15 @@
 package MatrixBot;
 $MatrixBot::VERSION = '0.210305'; # YYMMDD
 
-use v5.14;
+use v5.26;
 use strict;
 use warnings;
+use utf8;
 use Encode;
 use Data::Dump qw(dump);
 use AnyEvent::HTTP;
 use JSON::XS;
 use URI::Escape;
-use utf8;
 use HTML::Entities;
 
 use ConfigUtil;
@@ -361,9 +361,8 @@ sub parseMessageOne{
     return undef;
 }
 
-sub encodeHtml($){
-    return encode_entities($_[0], '<>&"');
-}
+# HTML Entitiesのエンコード。最小限に留める
+sub encodeHtml($){ encode_entities($_[0], '<>&"') }
 
 sub send{
     my($self,$roomId,$msg)=@_;
@@ -377,13 +376,15 @@ sub send{
         $formattedBody = encodeHtml($formattedBody)
     }
 
-    # スマホアプリは素のbodyをMarkdownデコードしてしまうので、<>で囲まれた部分などが消えてしまう
-    $msg = encodeHtml($msg);
-
     my $params = {
         msgtype=>"m.text", 
-        body=>$msg,
         format =>"org.matrix.custom.html",
+
+        # スマホアプリは素のbodyをMarkdownデコードして表示する
+        # < > 等が消えないようHTML Entitiyのエンコードが必要
+        body=>encodeHtml($msg), 
+
+        # WebUIはこちらのHTMLを使う
         formatted_body => $formattedBody,
     };
 
@@ -405,9 +406,10 @@ sub send{
 
             my $root = eval{ decode_json($data) };
             if($@){
-                return $self->{logger}->e("JSON parse error. %s","".$@);
+                return $self->{logger}->e("JSON parse error. %s","".$@);    
             }
-            $self->{logger}->d("post result. %s",$lastJson);
+
+            $root->{event_id} or $self->{logger}->d("post result. %s",$lastJson);
             # {"event_id":"$X0Z0Yza9VSj2BaYXj9KCgn6WL6rPX6K52hK2orf60Nk"}
         };
 }

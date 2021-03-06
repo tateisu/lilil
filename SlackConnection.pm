@@ -1,12 +1,12 @@
 package SlackConnection;
 $SlackConnection::VERSION = '0.161009'; # YYMMDD
 
-use v5.14;
+use v5.26;
 use strict;
 use warnings;
 
 use Attribute::Constant;
-use JSON;
+use JSON::XS;
 use AnyEvent;
 use AnyEvent::WebSocket::Client 0.53;
 use AnyEvent::HTTP;

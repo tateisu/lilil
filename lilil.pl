@@ -9,9 +9,11 @@ use Time::HiRes qw(time);
 use Scalar::Util qw( reftype );
 use Data::Dump qw(dump);
 
-# アプリ内モジュール
+# スクリプトのあるフォルダを依存関係に追加する
 use FindBin 1.51 qw( $RealBin );
 use lib $RealBin;
+
+# アプリ内モジュール
 use Logger;
 use ConfigUtil;
 use SlackUtil;
