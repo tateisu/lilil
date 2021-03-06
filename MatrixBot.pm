@@ -22,6 +22,7 @@ my %config_keywords = ConfigUtil::parse_config_keywords(qw(
     password:so
     token:so
     userAgent:s
+    mediaPrefix:so
 ));
 
 sub check_config{
@@ -323,16 +324,16 @@ sub parseMessageOne{
     }elsif($msgType eq "m.image"){
         my $url = $content->{url};
         my $caption = $content->{body};
-        if( $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
+        if( $self->{config}{mediaPrefix} and $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
             my($site,$code)=($1,$2);
-            $url ="https://$site/_matrix/media/r0/download/$site/$code";
+            $url ="$self->{config}{mediaPrefix}$site/$code";
         }
         $text = join " ",grep{ defined $_ and length $_ } ("(image)",$caption,$url);
     }elsif($msgType eq "m.audio"){
         my $url = $content->{url};
-        if( $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
+        if( $self->{config}{mediaPrefix} and $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
             my($site,$code)=($1,$2);
-            $url ="https://$site/_matrix/media/r0/download/$site/$code";
+            $url ="$self->{config}{mediaPrefix}$site/$code";
         }
 
         my $caption = $content->{body};
@@ -350,7 +351,13 @@ sub parseMessageOne{
     push @$lastList,$now;
     return "rate-limit from $time $sender $text" if @$lastList>12;
 
-    $self->{cb_relay}->( $self, $roomId, $sender, $text );
+    for( split /[\x0d\x0a]+/,$text){
+        s/\A\s+//;
+        s/\s+\z//;
+        next if not length;
+        $self->{cb_relay}->( $self, $roomId, $sender, $_ );
+    }
+
     return undef;
 }
 
@@ -365,11 +372,13 @@ sub send{
     $token or return $self->{logger}->e("send: missing token.");
 
     # 名前部分をマークアップしたい
-
     my $formattedBody = $msg;
     if( not $formattedBody =~ s|\A(.*)`([^`]+)`(\s*)(.*)|encodeHtml($1)."<b>".encodeHtml($2)."</b>".$3.encodeHtml($4)|e ){
         $formattedBody = encodeHtml($formattedBody)
     }
+
+    # スマホアプリは素のbodyをMarkdownデコードしてしまうので、<>で囲まれた部分などが消えてしまう
+    $msg = encodeHtml($msg);
 
     my $params = {
         msgtype=>"m.text", 
