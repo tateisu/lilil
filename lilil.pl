@@ -167,8 +167,9 @@ sub cb_irc_relay{
 
 	my $channel_lc = IRCUtil::lc_irc( $channel );
 
-	my $is_notice = ($command =~ /notice/i);
+	$from_nick =~ s/`/_/g;
 
+	my $is_notice = ($command =~ /notice/i);
 	my $is_action = 0;
 	if( $msg =~ s/\A\x01ACTION\s+(.+)\x01\z/$1/ ){
 		$is_action = 1;
