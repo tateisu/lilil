@@ -367,7 +367,7 @@ sub onTimerSend{
 
     # 名前部分をマークアップしたい
     my $formattedBody = $msg;
-    if( not $formattedBody =~ s|\A(.*)`([^`]+)`(\s*)(.*)|encodeHtml($1)."<b>".encodeHtml($2)."</b>".$3.encodeHtml($4)|e ){
+    if( not $formattedBody =~ s|\A([^`]*)`([^`]+)`(\s*)(.*)|encodeHtml($1)."<b>".encodeHtml($2)."</b>".$3.encodeHtml($4)|e ){
         $formattedBody = encodeHtml($formattedBody)
     }
 
