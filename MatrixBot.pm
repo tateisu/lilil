@@ -26,6 +26,8 @@ my %config_keywords = ConfigUtil::parse_config_keywords(qw(
     user:so
     password:so
     timeout:do
+
+    domainNameMap:ho
 ));
 
 sub check_config{

@@ -53,6 +53,14 @@ sub check_config_keywords{
 				$logger->e( "config warning: '%s' is optional, or set array-ref value, specified data is %s.",$name,reftype($v) );
 				$valid = 0;
 			}
+		}elsif( $type eq 'ho' ){
+			if( not defined $v ){
+				# array optional
+			}elsif( 'HASH' ne reftype $v ){
+				$logger->e( "config warning: '%s' is optional, or set hash-ref value, specified data is %s.",$name,reftype($v) );
+				$valid = 0;
+			}
+
 
 		}elsif( $type eq 'b' ){
 			# boolean required.

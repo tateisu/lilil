@@ -582,16 +582,13 @@ sub _flush_cue{
 	$@ and $self->{logger}->w("send failed. %s",$@);
 }
 
-
-
-
 # slackのチャンネルにメッセージを送る
 # $msg はUTF8フラグつきの文字列
 sub send_message{
 	my($self,$channel_id,$msg)=@_;
 
 	return if $self->{is_disposed};
-	
+
 	my $tx_channel = $self->{tx_channel}{$channel_id};
 	$tx_channel or $tx_channel = $self->{tx_channel}{$channel_id} = {
 		cue => [],

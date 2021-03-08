@@ -154,6 +154,14 @@ sub cb_slack_relay{
 sub cb_matrix_relay{
 	my($bot, $roomId, $sender, $msg )=@_;
 
+	# IRCやSlackに送る名前を短縮する。
+	my $domainNameMap = $bot->{config}->{domainNameMap};
+	if( $domainNameMap && $sender =~ /\A\@?([^:]+):(.+)/){
+		my($user,$host)=($1,$2);
+		my $short = $domainNameMap->{$host};
+		$short and $sender = $user .':'.$short;
+	}
+
 	fanOut("`$sender` $msg",sub{
 		my($relay)=@_;
 		my($inRoom) = grep{ $_->{type} eq "matrix" and $_->{connName} eq $bot->{config}{name} and $_->{roomName} eq $roomId} @{$relay->{inRooms}};
