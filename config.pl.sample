@@ -3,6 +3,8 @@ use utf8;
 use strict;
 use warnings;
 
+no warnings 'qw';
+
 my $dummy_value = {
 
 	# debug log. one of debug,verbose,info,warning,error
@@ -64,6 +66,8 @@ my $dummy_value = {
 
 			serverPrefix => "https://matrix.fedibird.com/_matrix/client/r0",
 
+ 			mediaPrefix =>"https://matrix.fedibird.com/_matrix/media/r0/download/",
+ 
 			# if you have token, we can skip login.
 			token =>"xxxxxxxx",
 
@@ -158,7 +162,7 @@ my $dummy_value = {
 			# 1 for iso-2022-jp, 0 for UTF-8
 			is_jis => 1,
 
-			# chanels to join when after connection authoprized.
+			# chanels to join when after connection authorized.
 			auto_join =>[
 				'#channel1', '#channel2', # ...
 			],
