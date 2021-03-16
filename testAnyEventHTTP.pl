@@ -8,7 +8,7 @@ use Data::Dump;
 my $c = AnyEvent->condvar;
 
 print "a\n";
-http_get "http://nonexistent.non/",sub{
+http_get "http://matrix.juggler.jp/",sub{
 	print Data::Dump::dump(\@_),"\n";
 	$c->broadcast;
 };

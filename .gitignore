@@ -1,4 +1,5 @@
 config.pl
+config.pl.main
 deploy.sh
 hup
 start
