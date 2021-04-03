@@ -210,7 +210,6 @@ sub on_timer{
 		@{$self->{config}{auto_join}}
 	};
 
-	
 	{
 		my( $iv );
 		$self->{fp_tx_cue} =[];
@@ -357,6 +356,44 @@ sub on_timer{
 			}else{
 				# auto-op check
 				$auto_op->($conn,$channel_raw,$channel,$from);
+			}
+		},
+		
+		# ERR_TOOMANYTARGETS
+		[qw( irc_407 )] => sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			my $msg = join " ", @{ $args->{params} };
+			$self->{logger}->e("ERR_TOOMANYTARGETS %s",$self->{decode}( $msg));
+			if( $msg =~ /Duplicate (!\S+)/i ){
+				$self->send( LIST => $1 );
+			}
+		},
+
+		# RPL_LIST
+		[qw( irc_322 )] => sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			$self->{logger}->w("RPL_LIST %s",$self->{decode}( join " ", @{ $args->{params} } ));
+			my $channel_raw = $args->{params}[1];
+			my $user_count  = 0+ ($args->{params}[2] // -1);
+			if( $channel_raw and $user_count > 0 ){
+				my $rh = $self->{RPL_LIST};
+				$rh or $rh = $self->{RPL_LIST} = {};
+				$rh->{$channel_raw}=$user_count;
+			}
+		},
+
+		# RPL_LISTEND
+		[qw( irc_323 )] => sub{
+			my($conn,$event_type,$args) = @_; # args は無名ハッシュ :<prefix> <command> [params] (params contains trail part)
+			$self->{logger}->w("RPL_LISTEND %s",$self->{decode}( join " ", @{ $args->{params} } ));
+			my $rh = $self->{RPL_LIST};
+			delete $self->{RPL_LIST};
+			if( $rh ){
+				# 最もユーザが多いチャンネル
+				my($channel_raw) = sort { $rh->{$b} <=> $rh->{$a} } keys %$rh;
+				if( $channel_raw ){
+					$self->send( JOIN => $channel_raw );
+				}
 			}
 		},
 		

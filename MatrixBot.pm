@@ -120,6 +120,17 @@ sub showUrl{
     $self->{logger}->d("%s %s",$method,$url);
 }
 
+sub filterUrl{
+    my($self,$url)=@_;
+    if($url && $self->{config}{mediaPrefix} ){
+        if( $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
+            my($site,$code)=($1,$2);
+            $url ="$self->{config}{mediaPrefix}$site/$code";
+        }
+    }
+    $url;
+}
+
 sub parseMessageOne{
     my($self,$roomId,$event) =@_;
 
@@ -132,40 +143,37 @@ sub parseMessageOne{
     my $time = $event->{origin_server_ts} / 1000.0;
     return "too old message" if $time < $firstRequest;
 
-    # メッセージイベント以外は無視する
-    my $type = $event->{type};
-    return "not message event $type" if $type ne "m.room.message";
-
-    my $sender = $event->{sender} || "?";
-
     # 自分からのメッセージは無視する
+    my $sender = $event->{sender} || "?";
     return "skip message from me" if $sender eq $myselfId;
 
-    my $content = $event->{content};
-    my $msgType = $content->{msgtype};
-
     my $text;
-    if( $msgType eq "m.text"){
-        $text = $content->{body};
-    }elsif($msgType eq "m.image"){
-        my $url = $content->{url};
-        if( $self->{config}{mediaPrefix} and $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
-            my($site,$code)=($1,$2);
-            $url ="$self->{config}{mediaPrefix}$site/$code";
-        }
-        my $caption = $content->{body};
-        $text = join " ",grep{ defined $_ and length $_ } ("(image)",$caption,$url);
-    }elsif($msgType eq "m.audio"){
-        my $url = $content->{url};
-        if( $self->{config}{mediaPrefix} and $url =~ m|\Amxc://([^/]+)/([^/#?]+)\z| ){
-            my($site,$code)=($1,$2);
-            $url ="$self->{config}{mediaPrefix}$site/$code";
-        }
 
-        my $caption = $content->{body};
-        $text = join " ",grep{ defined $_ and length $_ } ("(audio)",$caption,$url);
+    my $type = $event->{type};
+    if( $type eq "m.room.message"){
+        my $content = $event->{content};
+        my $msgType = $content->{msgtype};
+
+        if( $msgType eq "m.text"){
+            $text = $content->{body};
+        }elsif($msgType eq "m.image"){
+            my $url = $self->filterUrl($content->{url});
+            my $caption = $content->{body};
+            $text = join " ",grep{ defined $_ and length $_ } ("(image)",$caption,$url);
+        }elsif($msgType eq "m.audio"){
+            my $url = $self->filterUrl($content->{url});
+            my $caption = $content->{body};
+            $text = join " ",grep{ defined $_ and length $_ } ("(audio)",$caption,$url);
+        }else{
+            $text = encode_json($content);
+        }
+    }elsif( $type eq "m.sticker" ){
+        my $content = $event->{content};
+        my $url = $self->filterUrl($content->{url});
+        $text = join " ",grep{ defined $_ and length $_ }
+            ("(ステッカー)",$content->{body},$url);
     }else{
-        $text = encode_json($content);
+        return "unsupported message event type=$type";
     }
 
     # ユーザごとにrate limitする
@@ -367,7 +375,7 @@ sub onTimerSend{
 
     # 名前部分をマークアップしたい
     my $formattedBody = $msg;
-    if( not $formattedBody =~ s|\A(.*)`([^`]+)`(\s*)(.*)|encodeHtml($1)."<b>".encodeHtml($2)."</b>".$3.encodeHtml($4)|e ){
+    if( not $formattedBody =~ s|\A([^`]*)`([^`]+)`(\s*)(.*)|encodeHtml($1)."<b>".encodeHtml($2)."</b>".$3.encodeHtml($4)|e ){
         $formattedBody = encodeHtml($formattedBody)
     }
 
